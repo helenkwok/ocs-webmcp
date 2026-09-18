@@ -101,7 +101,14 @@ at **exactly** the version in upstream's `Cargo.lock` (0.2.108 at the pinned com
 npm run build      # clone upstream at the pinned commit, build it unmodified, assemble dist/
 npm run serve      # http://127.0.0.1:8787/ with the COOP/COEP headers upstream expects
 npm run test:e2e   # 31 checks through real WebMCP in headless Chrome
+node scripts/open-file.mjs plan.dwg   # open a real DWG/DXF through the tools; report + zoomed screenshot
 ```
+
+Real-file check, 2026-09-18: a 2.6 MB AutoCAD **2007** DWG (`AC1021`, a canteen from
+dwgmodels.com) opened through `ocs_open_drawing` in 4.7 s. It had 29,212 entities (24,947
+lines, 750 block references, 279 hatches, 216 MTexts, 141 3D solids, …), 14 layers and 110
+blocks, and rendered correctly after `ocs_set_view`. The web build does not **draw** hatches
+(an upstream WebGL2 limitation), but they are in the data and can be queried.
 
 ### Driving it from an agent: agent-browser
 
