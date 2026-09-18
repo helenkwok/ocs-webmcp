@@ -1,0 +1,15 @@
+{
+    "name": "ocs-webmcp",
+    "version": "0.1.0",
+    "description": "Open CAD Studio's DWG/DXF editor exposed to AI agents over WebMCP: read tools, plus write tools that wait for a human.",
+    "type": "module",
+    "license": "MIT",
+    "private": true,
+    "scripts": {
+        "build": "node scripts/vendor.mjs",
+        "serve": "node scripts/serve.mjs",
+        "test:e2e": "node scripts/e2e.mjs"
+    },
+    "engines": { "node": ">=22" },
+    "keywords": ["webmcp", "cad", "dwg", "dxf", "ai-agent", "model-context-protocol"]
+}
