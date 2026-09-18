@@ -77,20 +77,30 @@ export const WRITE_TOOLS = [
         title: "Open a drawing from content",
         write: true,
         description:
-            "Open a DWG or DXF in a new tab from its bytes. Pass DXF as `text`, or any file as `base64`. `name` must end in .dwg or .dxf; it becomes the tab title.",
+            "Open a DWG or DXF in a new tab. Pass exactly one of: `url` (preferred for real drawings: the page fetches it, subject to the browser's normal cross-origin rules), `base64` (file content; fine for small files, but tool-argument limits apply, e.g. agent-browser caps arguments at 1 MB), or `text` (ASCII DXF). `name` must end in .dwg or .dxf; it becomes the tab title.",
         inputSchema: {
             type: "object",
             properties: {
                 name: { type: "string", description: "File name, e.g. plan.dwg" },
                 text: { type: "string", description: "ASCII DXF content." },
-                base64: { type: "string", description: "File content, base64 (DWG or binary DXF)." },
+                base64: { type: "string", description: "File content, base64 (DWG or binary DXF). Small files only." },
+                url: { type: "string", description: "Where to fetch the file from, e.g. /samples/plan.dwg or an https URL that allows cross-origin reads." },
             },
             required: ["name"],
         },
         handler: async (input, { control }) => {
             if (!/\.(dwg|dxf)$/i.test(input.name)) throw new Error("name must end in .dwg or .dxf");
-            if ((input.text == null) === (input.base64 == null)) throw new Error("pass exactly one of text or base64");
-            const bytes = input.text != null ? new TextEncoder().encode(input.text) : b64ToBytes(input.base64);
+            const given = ["text", "base64", "url"].filter((k) => input[k] != null);
+            if (given.length !== 1) throw new Error("pass exactly one of url, base64 or text");
+            let bytes;
+            if (input.url != null) {
+                const res = await fetch(new URL(input.url, location.href), { credentials: "omit" });
+                if (!res.ok) throw new Error(`fetching ${input.url} failed: HTTP ${res.status}`);
+                bytes = new Uint8Array(await res.arrayBuffer());
+            } else {
+                bytes = input.text != null ? new TextEncoder().encode(input.text) : b64ToBytes(input.base64);
+            }
+            if (bytes.length > 200_000_000) throw new Error(`file is ${bytes.length} bytes; refusing to open more than 200 MB in the browser`);
             const before = (await control.state()).documents?.length ?? 0;
             await clearDonationPrompt(control);
             const reply = await control.openBytes(input.name, bytes);
@@ -129,6 +139,48 @@ export const WRITE_TOOLS = [
                 added: before != null && after != null ? after - before : null,
                 revision: st.revision,
             };
+        },
+    },
+    {
+        name: "ocs_add_text",
+        title: "Add a text note",
+        write: true,
+        description:
+            "Place a single-line text note: insertion point, height and rotation in drawing units, and the text itself (spaces are fine). Open CAD Studio takes the words through an in-canvas editor, which a plain ocs_run_command cannot fill, so use this rather than TEXT.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                x: { type: "number" }, y: { type: "number" },
+                height: { type: "number", exclusiveMinimum: 0, description: "Text height in drawing units (e.g. mm)." },
+                rotation: { type: "number", description: "Degrees, default 0." },
+                text: { type: "string", minLength: 1 },
+                revision: { type: "integer", description: "Optional: the revision you last read; the edit is refused if the drawing changed since." },
+            },
+            required: ["x", "y", "height", "text"],
+        },
+        handler: async (input, { control }) => {
+            const { document_id, revision } = await control.activeDrawing();
+            if (input.revision != null && input.revision !== revision) {
+                throw new ControlError({ code: "stale_state", error: `The drawing changed since you read it (your revision ${input.revision}, now ${revision}). Re-read before editing.` });
+            }
+            const before = await entityTotal(control);
+            await control.must({ op: "run", request_id: control.nextRequestId("text"), document_id, revision, cmd: `TEXT ${input.x},${input.y} ${input.height} ${input.rotation ?? 0}` });
+            await sleep(200);
+            await control.must({ op: "action", request_id: control.nextRequestId("text-in"), document_id, name: "text_input", value: input.text });
+            await control.must({ op: "action", request_id: control.nextRequestId("text-ok"), document_id, name: "text_commit" });
+            // TEXT, like AutoCAD's, moves on to a NEXT line after each commit and leaves an empty
+            // in-canvas box open. Escape (`cancel` -> CommandEscape -> text_inline_cancel) closes it
+            // without touching the committed note. (An empty text_input is rejected upstream:
+            // "Missing value".)
+            await sleep(200);
+            const now = await control.state();
+            if (now.command || now.text_editor) {
+                await control.must({ op: "cancel", request_id: control.nextRequestId("text-end"), document_id });
+                await settle(control, (s) => !s.command && !s.text_editor, 2000);
+            }
+            const st = await settle(control, (s) => s.command == null, 3000);
+            const after = await entityTotal(control);
+            return { added: after - before, text: input.text, at: [input.x, input.y], height: input.height, revision: st.revision };
         },
     },
     {

@@ -20,6 +20,7 @@ function summariseState(st) {
         layout: st.layout,
         camera: { target: st.camera?.target, distance: st.camera?.distance, projection: st.camera?.projection },
         active_command: st.command,
+        text_editor_open: st.text_editor === true,   // upstream reports a boolean (text_inline.is_some())
         modal: st.modal,
         selection: { count: st.selection?.length ?? 0, handles: (st.selection ?? []).slice(0, 50) },
         version: st.version,

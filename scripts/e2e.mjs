@@ -54,7 +54,7 @@ try {
     if (!ready) throw new Error("not ready");
 
     const tools = JSON.parse(await ev(`(async () => JSON.stringify((await document.modelContext.getTools()).map(t => ({ name: t.name, annotations: t.annotations }))))()`));
-    check("getTools() lists 18 tools", tools.length === 18, tools.map((t) => t.name).join(", "));
+    check("getTools() lists 19 tools", tools.length === 19, tools.map((t) => t.name).join(", "));
 
     // Start a tool call WITHOUT awaiting it, so a confirm dialog can be answered meanwhile.
     const start = (name, input = {}) => ev(`(() => {
@@ -111,6 +111,12 @@ try {
     }
     r = await call("ocs_run_command", { cmd: "CIRCLE 50,25 10" }, true);
     check("ocs_run_command CIRCLE adds 1", json(r.raw)?.added === 1, payload(r.raw).slice(0, 160));
+
+    r = await call("ocs_add_text", { x: 0, y: -10, height: 5, text: "E2E NOTE WITH SPACES" }, true);
+    const note = json((await call("ocs_query_records", { type: "Text", paths: ["/value"] })).raw)?.records?.map((x) => x.values["/value"]);
+    const afterText = json((await call("ocs_get_state")).raw);
+    check("ocs_add_text places a multi-word note and ends the command", json(r.raw)?.added === 1 && note?.includes("E2E NOTE WITH SPACES") && afterText?.active_command == null && afterText?.text_editor_open === false, `${JSON.stringify(note)} active_command=${JSON.stringify(afterText?.active_command)} text_editor_open=${afterText?.text_editor_open} reply=${payload(r.raw).replace(/\s+/g, " ").slice(0, 500)}`);
+    await call("ocs_undo", {}, true);
 
     r = await call("ocs_count_entities");
     check("ocs_count_entities = 2 Line + 1 Circle", json(r.raw)?.by_type?.Line === 2 && json(r.raw)?.by_type?.Circle === 1, payload(r.raw));
@@ -230,6 +236,11 @@ try {
         "0","CIRCLE","8","0","10","12","20","5","30","0","40","3","0","ENDSEC","0","EOF",""].join("\r\n");
     r = await call("ocs_open_drawing", { name: "e2e-probe.dxf", text: DXF }, true);
     check("ocs_open_drawing (DXF text) opens a tab with 2 entities", json(r.raw)?.entities === 2 && /e2e-probe/.test(JSON.stringify(json(r.raw)?.opened)), payload(r.raw).slice(0, 200));
+
+    // open by URL (the path for real-sized drawings; tool arguments have size limits)
+    writeFileSync(resolve(ROOT, "dist", "e2e-sample.dxf"), DXF);
+    r = await call("ocs_open_drawing", { name: "e2e-url.dxf", url: "/e2e-sample.dxf" }, true);
+    check("ocs_open_drawing by url", json(r.raw)?.entities === 2 && json(r.raw)?.bytes === DXF.length, payload(r.raw).slice(0, 160));
 
     r = await call("ocs_get_history", { last: 5 });
     check("ocs_get_history", Array.isArray(json(r.raw)?.entries), payload(r.raw).slice(0, 140));

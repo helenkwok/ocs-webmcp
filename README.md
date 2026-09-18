@@ -12,7 +12,7 @@ server drives, running in the browser tab.
 
 | | |
 |---|---|
-| **This repository (MIT)** | The WebMCP layer (`src/`): 18 tools, the registration gate, the human confirm dialog, the activity trail, the control-channel client. The shell (`shell/`). The build and test scripts (`scripts/`). |
+| **This repository (MIT)** | The WebMCP layer (`src/`): 19 tools, the registration gate, the human confirm dialog, the activity trail, the control-channel client. The shell (`shell/`). The build and test scripts (`scripts/`). |
 | **Not ours (GPL-3.0-only)** | The CAD application itself: Open CAD Studio by Hakan Seven and contributors, including its DWG/DXF engine. **Built unmodified** from a pinned upstream commit; no upstream file is edited. |
 
 The combined deployment is a GPL-3.0 work. See [NOTICE.md](NOTICE.md) for its Corresponding
@@ -21,7 +21,7 @@ Source.
 ## How it works
 
 ```
- browser tab (document.modelContext: 18 tools)
+ browser tab (document.modelContext: 19 tools)
  ┌──────────────────────────────────────────────┬──────────────────┐
  │ /  shell  (MIT)                              │ agent activity   │
  │   registers tools → gate → confirm dialog     │  (every call)    │
@@ -53,8 +53,10 @@ human gets the video (**MP4**, or WebM where MP4 can't be recorded) as a downloa
 panel. The agent gets a **contact sheet**: one image of the frames that changed, with timestamps
 and the changed region outlined. An agent can't watch a video, but it can read a contact sheet.
 
-**Write (each waits for a human):** `ocs_new_drawing` · `ocs_open_drawing` (DXF text or
-DWG/DXF base64) · `ocs_run_command` · `ocs_cancel_command` · `ocs_set_properties` ·
+**Write (each waits for a human):** `ocs_new_drawing` · `ocs_open_drawing` (by `url` for real
+drawings; tool arguments are size-limited, e.g. agent-browser caps them at 1 MB; or base64/DXF text
+for small files) · `ocs_add_text` (single-line note; TEXT's in-canvas editor can't be filled by a
+command line) · `ocs_run_command` · `ocs_cancel_command` · `ocs_set_properties` ·
 `ocs_undo` · `ocs_redo`
 
 ### Screenshots and recording: how
@@ -100,8 +102,9 @@ at **exactly** the version in upstream's `Cargo.lock` (0.2.108 at the pinned com
 ```sh
 npm run build      # clone upstream at the pinned commit, build it unmodified, assemble dist/
 npm run serve      # http://127.0.0.1:8787/ with the COOP/COEP headers upstream expects
-npm run test:e2e   # 31 checks through real WebMCP in headless Chrome
+npm run test:e2e   # 33 checks through real WebMCP in headless Chrome
 node scripts/open-file.mjs plan.dwg   # open a real DWG/DXF through the tools; report + zoomed screenshot
+node scripts/demo.mjs plan.dwg        # record a demo video, driven through agent-browser (needs ffmpeg)
 ```
 
 Real-file check, 2026-09-18: a 2.6 MB AutoCAD **2007** DWG (`AC1021`, a canteen from
@@ -119,7 +122,7 @@ agent-browser 0.37.1:
 ```sh
 npm run serve &
 agent-browser open http://127.0.0.1:8787/
-agent-browser webmcp list                                   # all 18 tools
+agent-browser webmcp list                                   # all 19 tools
 agent-browser webmcp invoke ocs_get_state
 agent-browser webmcp invoke ocs_capture_view --params '{"max_width":900}'   # returns image/jpeg
 # a write blocks on the human's dialog, so detach it and collect the result after approval:
