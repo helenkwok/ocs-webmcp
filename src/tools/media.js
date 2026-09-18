@@ -23,12 +23,24 @@ export const MEDIA_TOOLS = [
         inputSchema: { type: "object", properties: { view: { type: "string", enum: ["zoom_extents", "home"], description: "Default zoom_extents." } } },
         handler: async (input, { control }) => {
             const st = await control.state();
-            const before = st.camera_revision;
+            const cam = (s) => ({ target: s.camera?.target?.map((v) => Math.round(v * 1000) / 1000), distance: Math.round((s.camera?.distance ?? 0) * 1000) / 1000 });
+            const before = cam(st);
             await control.must({ op: "action", request_id: control.nextRequestId("view"), document_id: st.document_id, name: input.view === "home" ? "view_home" : "zoom_extents" });
-            // Let the editor apply and repaint before the next capture.
-            for (let i = 0; i < 20; i++) { await new Promise((r) => setTimeout(r, 50)); if ((await control.state()).camera_revision !== before) break; }
-            await new Promise((r) => setTimeout(r, 120));
-            return { view: input.view ?? "zoom_extents" };
+            // Wait until the camera has actually moved (or give up), then let it repaint.
+            let after = before;
+            for (let i = 0; i < 30; i++) {
+                await new Promise((r) => setTimeout(r, 50));
+                after = cam(await control.state());
+                if (JSON.stringify(after) !== JSON.stringify(before)) break;
+            }
+            await new Promise((r) => setTimeout(r, 150));
+            return {
+                view: input.view ?? "zoom_extents",
+                camera_before: before,
+                camera_after: after,
+                moved: JSON.stringify(after) !== JSON.stringify(before),
+                note: "Open CAD Studio fits to the whole viewport, including the strip under its floating command-line panel, so geometry at the very bottom edge can be hidden behind that panel.",
+            };
         },
     },
     {

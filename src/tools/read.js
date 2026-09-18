@@ -18,6 +18,7 @@ function summariseState(st) {
         revision: st.revision,
         documents: st.documents,
         layout: st.layout,
+        camera: { target: st.camera?.target, distance: st.camera?.distance, projection: st.camera?.projection },
         active_command: st.command,
         modal: st.modal,
         selection: { count: st.selection?.length ?? 0, handles: (st.selection ?? []).slice(0, 50) },

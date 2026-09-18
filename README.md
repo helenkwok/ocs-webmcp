@@ -100,7 +100,7 @@ at **exactly** the version in upstream's `Cargo.lock` (0.2.108 at the pinned com
 ```sh
 npm run build      # clone upstream at the pinned commit, build it unmodified, assemble dist/
 npm run serve      # http://127.0.0.1:8787/ with the COOP/COEP headers upstream expects
-npm run test:e2e   # 30 checks through real WebMCP in headless Chrome
+npm run test:e2e   # 31 checks through real WebMCP in headless Chrome
 ```
 
 ### Driving it from an agent: agent-browser

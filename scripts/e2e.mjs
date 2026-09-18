@@ -165,11 +165,30 @@ try {
     r = await call("ocs_capture_view", { if_changed: true });
     check("if_changed after a change returns an image", !!imgOf(r.raw), JSON.stringify(captionOf(r.raw)));
 
-    const beforeFit = imgOf((await call("ocs_capture_view", {})).raw);
+    // A real zoom-to-fit test: a fresh drawing whose extents are known, the camera must move to
+    // their centre, and the drawn pixels must cover much more of the view afterwards. (An earlier
+    // version only checked that the screenshot changed, which the "Zoom Extents" log line alone
+    // satisfies.)
+    await call("ocs_new_drawing", {}, true);
+    await call("ocs_run_command", { cmd: "PLINE 0,0 100,0 100,50 0,50 C" }, true);
+    await call("ocs_run_command", { cmd: "CIRCLE 50,25 20" }, true);
+    const beforeFit = imgOf((await call("ocs_capture_view", { format: "png", max_width: 1280 })).raw);
     r = await call("ocs_set_view", { view: "zoom_extents" });
-    const afterFit = imgOf((await call("ocs_capture_view", { if_changed: true })).raw);
-    check("ocs_set_view zoom_extents changes the framing (no confirm)", !isError(r.raw) && !!beforeFit && !!afterFit, payload(r.raw).slice(0, 60));
-    if (afterFit) writeFileSync(resolve(OUT, "capture-zoom-extents.jpg"), Buffer.from(afterFit.data, "base64"));
+    const fit = json(r.raw);
+    const afterFit = imgOf((await call("ocs_capture_view", { format: "png", max_width: 1280 })).raw);
+    const bright = (b64) => ev(`(async () => { const i = new Image(); i.src = 'data:image/png;base64,' + ${JSON.stringify(b64)}; await i.decode();
+        const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const g = c.getContext('2d'); g.drawImage(i, 0, 0);
+        // viewport only: right of the Properties panel, between the ribbon/tabs and the command line
+        const x0 = Math.round(i.width * 0.21), x1 = Math.round(i.width * 0.88), y0 = Math.round(i.height * 0.20), y1 = Math.round(i.height * 0.86);
+        const d = g.getImageData(x0, y0, x1 - x0, y1 - y0).data, W = x1 - x0; let minx = 1e9, maxx = -1, miny = 1e9, maxy = -1;
+        for (let k = 0, p = 0; k < d.length; k += 4, p++) { if (d[k] > 170 && d[k+1] > 170 && d[k+2] > 170) { const x = p % W, y = (p / W) | 0; if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y } }
+        return maxx < 0 ? { w: 0, h: 0 } : { w: +((maxx - minx) / W).toFixed(3), h: +((maxy - miny) / (y1 - y0)).toFixed(3) } })()`);
+    const bb0 = beforeFit ? await bright(beforeFit.data) : null, bb1 = afterFit ? await bright(afterFit.data) : null;
+    const centred = fit?.camera_after?.target?.[0] === 50 && fit?.camera_after?.target?.[1] === 25;
+    check("zoom_extents moves the camera to the drawing's centre", fit?.moved === true && centred, JSON.stringify({ before: fit?.camera_before, after: fit?.camera_after }));
+    check("zoom_extents makes the drawing fill the view", bb1?.w > 0.6 && bb1?.w > (bb0?.w ?? 0) + 0.2, `drawn-pixel extent (fraction of viewport) before=${JSON.stringify(bb0)} after=${JSON.stringify(bb1)}`);
+    if (beforeFit) writeFileSync(resolve(OUT, "zoom-before.png"), Buffer.from(beforeFit.data, "base64"));
+    if (afterFit) writeFileSync(resolve(OUT, "zoom-after.png"), Buffer.from(afterFit.data, "base64"));
 
     r = await call("ocs_start_recording", {}, false);
     const recHiddenAfterDecline = await ev(`document.querySelector('[data-ocs-rec]').hidden`);
