@@ -19,6 +19,10 @@
   [data-ocs-status] { color: var(--muted); }
   [data-ocs-status][data-ok="false"] { color: var(--bad); }
   header a { margin-left: auto; color: var(--muted); }
+  [data-ocs-rec] { color: #fff; background: var(--bad); padding: 1px 8px; border-radius: 10px; font-weight: 600; animation: rec 1.2s steps(2) infinite; }
+  @keyframes rec { 50% { opacity: .45; } }
+  [data-ocs-activity] li[data-phase="download"] { border-color: var(--accent); }
+  [data-ocs-activity] a { color: var(--accent); }
   main { display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
   iframe { width: 100%; height: 100%; border: 0; background: #000; }
   aside { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
@@ -45,6 +49,7 @@
 <header>
   <strong>OCS WebMCP</strong>
   <span data-ocs-status data-ok="true">Starting…</span>
+  <span data-ocs-rec hidden title="The agent is recording the editor">● REC</span>
   <a href="NOTICE.md">Licences &amp; source</a>
 </header>
 <main>
@@ -59,7 +64,7 @@
 <dialog data-ocs-confirm>
   <header>
     <h3 data-ocs-confirm-title></h3>
-    <p>An agent wants to change the drawing. Nothing happens unless you approve.</p>
+    <p>An agent is asking to do this. Nothing happens unless you approve.</p>
   </header>
   <pre><span data-ocs-confirm-tool></span>
 <span data-ocs-confirm-args></span></pre>

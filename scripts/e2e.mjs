@@ -54,7 +54,7 @@ try {
     if (!ready) throw new Error("not ready");
 
     const tools = JSON.parse(await ev(`(async () => JSON.stringify((await document.modelContext.getTools()).map(t => ({ name: t.name, annotations: t.annotations }))))()`));
-    check("getTools() lists 14 tools", tools.length === 14, tools.map((t) => t.name).join(", "));
+    check("getTools() lists 18 tools", tools.length === 18, tools.map((t) => t.name).join(", "));
 
     // Start a tool call WITHOUT awaiting it, so a confirm dialog can be answered meanwhile.
     const start = (name, input = {}) => ev(`(() => {
@@ -142,6 +142,69 @@ try {
         s = JSON.parse(s); const id2 = f.ocs_control_submit(JSON.stringify({ op: 'run', request_id: 'stale', document_id: s.document_id, revision: s.revision - 1, cmd: 'LINE 0,0 1,1' }));
         for (let i=0;i<50;i++){ await new Promise(r=>setTimeout(r,50)); const o = f.ocs_control_take(id2); if (o) return o } })()`);
     check("stale revision is rejected upstream (stale_state)", /stale_state/.test(stale ?? ""), (stale ?? "").slice(0, 100));
+
+    // ── screenshot + recording ──
+    const imgOf = (raw) => { try { return JSON.parse(raw).content?.find((c) => c.type === "image") ?? null; } catch { return null; } };
+    const captionOf = (raw) => { try { return JSON.parse(JSON.parse(raw).content?.find((c) => c.type === "text")?.text ?? "null"); } catch { return null; } };
+    const pixelStats = (b64, mime) => ev(`(async () => { const i = new Image(); i.src = 'data:${mime};base64,' + ${JSON.stringify(b64)}; await i.decode();
+        const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const g = c.getContext('2d'); g.drawImage(i, 0, 0);
+        const d = g.getImageData(0, 0, c.width, c.height).data; let s = 0, s2 = 0, n = d.length / 4;
+        for (let k = 0; k < d.length; k += 4) { const v = (d[k] + d[k+1] + d[k+2]) / 3; s += v; s2 += v * v }
+        const m = s / n; return { w: i.width, h: i.height, mean: +m.toFixed(1), std: +Math.sqrt(s2 / n - m * m).toFixed(1) } })()`);
+
+    r = await call("ocs_capture_view", { max_width: 1024 });
+    let img = imgOf(r.raw);
+    let px = img ? await pixelStats(img.data, img.mimeType) : null;
+    check("ocs_capture_view returns a real (non-black) image", !!img && px.std > 5, JSON.stringify(px));
+    if (img) writeFileSync(resolve(OUT, "capture.jpg"), Buffer.from(img.data, "base64"));
+
+    r = await call("ocs_capture_view", { if_changed: true });
+    check("if_changed with no change returns no image", !imgOf(r.raw) && json(r.raw)?.unchanged === true, payload(r.raw).slice(0, 120));
+
+    await call("ocs_run_command", { cmd: "CIRCLE 50,25 30" }, true);
+    r = await call("ocs_capture_view", { if_changed: true });
+    check("if_changed after a change returns an image", !!imgOf(r.raw), JSON.stringify(captionOf(r.raw)));
+
+    const beforeFit = imgOf((await call("ocs_capture_view", {})).raw);
+    r = await call("ocs_set_view", { view: "zoom_extents" });
+    const afterFit = imgOf((await call("ocs_capture_view", { if_changed: true })).raw);
+    check("ocs_set_view zoom_extents changes the framing (no confirm)", !isError(r.raw) && !!beforeFit && !!afterFit, payload(r.raw).slice(0, 60));
+    if (afterFit) writeFileSync(resolve(OUT, "capture-zoom-extents.jpg"), Buffer.from(afterFit.data, "base64"));
+
+    r = await call("ocs_start_recording", {}, false);
+    const recHiddenAfterDecline = await ev(`document.querySelector('[data-ocs-rec]').hidden`);
+    check("declined recording never starts", /REFUSED/.test(payload(r.raw)) && recHiddenAfterDecline, payload(r.raw).slice(0, 80));
+
+    r = await call("ocs_start_recording", { threshold: 0.02 }, true);
+    const recVisible = await ev(`!document.querySelector('[data-ocs-rec]').hidden`);
+    check("approved recording starts and shows REC", json(r.raw)?.recording === true && recVisible, payload(r.raw).slice(0, 120));
+    await sleep(800);
+    await call("ocs_run_command", { cmd: "LINE -40,-40 140,90" }, true);
+    await sleep(800);
+    await call("ocs_run_command", { cmd: "CIRCLE 120,60 15" }, true);
+    await sleep(800);
+    r = await call("ocs_stop_recording");
+    const sheet = imgOf(r.raw), recSum = captionOf(r.raw);
+    const sheetPx = sheet ? await pixelStats(sheet.data, sheet.mimeType) : null;
+    const recHidden = await ev(`document.querySelector('[data-ocs-rec]').hidden`);
+    const dl = await ev(`document.querySelector('[data-ocs-download]')?.textContent ?? null`);
+    check("stop returns a contact sheet of changed frames", !!sheet && recSum?.contact_sheet_frames >= 2 && sheetPx.std > 5 && recSum?.stopped_by === "ocs_stop_recording", `${JSON.stringify(recSum)} sheet=${JSON.stringify(sheetPx)}`);
+    check("video offered to the human, REC cleared", recSum?.video_bytes > 10000 && !!dl && recHidden, dl ?? "no link");
+    if (sheet) writeFileSync(resolve(OUT, "contact-sheet.jpg"), Buffer.from(sheet.data, "base64"));
+    const video = await ev(`(async () => { const a = document.querySelector('[data-ocs-download]'); const b = await (await fetch(a.href)).blob();
+        const u = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s) })()`);
+    writeFileSync(resolve(OUT, /mp4/.test(dl ?? "") ? "recording-1.mp4" : "recording-1.webm"), Buffer.from(video, "base64"));
+
+    r = await call("ocs_start_recording", { format: "mp4", max_seconds: 2 }, true);
+    check("mp4 recording starts", json(r.raw)?.mime?.startsWith("video/mp4"), payload(r.raw).slice(0, 100));
+    await call("ocs_run_command", { cmd: "LINE 0,-30 60,30" }, true);
+    await sleep(2600);   // let max_seconds end it by itself
+    r = await call("ocs_stop_recording");
+    const mp4Sum = captionOf(r.raw) ?? json(r.raw);
+    check("auto-stop at max_seconds finishes the recording", mp4Sum?.stopped_by?.startsWith("auto-stop") && /\.mp4$/.test(mp4Sum?.video ?? ""), JSON.stringify(mp4Sum));
+    const mp4 = await ev(`(async () => { const a = document.querySelector('[data-ocs-download]'); const b = await (await fetch(a.href)).blob();
+        const u = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s) })()`);
+    writeFileSync(resolve(OUT, "recording.mp4"), Buffer.from(mp4, "base64"));
 
     // open from bytes
     const DXF = ["0","SECTION","2","ENTITIES","0","LINE","8","0","10","0","20","0","30","0","11","25","21","10","31","0",

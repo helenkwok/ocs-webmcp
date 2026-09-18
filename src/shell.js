@@ -5,6 +5,8 @@ import { OcsControl } from "./control.js";
 import { registerAll } from "./gate.js";
 import { READ_TOOLS } from "./tools/read.js";
 import { WRITE_TOOLS } from "./tools/write.js";
+import { MEDIA_TOOLS } from "./tools/media.js";
+import { CanvasCapture } from "./capture.js";
 
 const $ = (sel) => document.querySelector(sel);
 const frame = $("#ocs");
@@ -52,7 +54,27 @@ function confirm(summary) {
 
 // ── boot ────────────────────────────────────────────────────────────────────────────────────
 const control = new OcsControl(frame);
-const tools = [...READ_TOOLS, ...WRITE_TOOLS];
+const capture = new CanvasCapture(() => frame.contentDocument?.querySelector("canvas") ?? null);
+const tools = [...READ_TOOLS, ...MEDIA_TOOLS, ...WRITE_TOOLS];
+
+// What media tools may do to the shell: a REC indicator and a download link. Nothing else.
+const ui = {
+    setRecording(on) {
+        document.querySelector("[data-ocs-rec]").hidden = !on;
+    },
+    offerDownload(blob, name) {
+        const li = document.createElement("li");
+        li.dataset.phase = "download";
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = name;
+        a.textContent = `⬇ ${name} (${(blob.size / 1e6).toFixed(2)} MB)`;
+        a.dataset.ocsDownload = name;
+        li.append(a);
+        log.prepend(li);
+    },
+};
+const session = { recording: null, lastRecording: null };
 const mc = document.modelContext;
 
 setStatus("Loading Open CAD Studio…");
@@ -64,8 +86,9 @@ control
             setStatus(`Open CAD Studio ${st.version} ready, but WebMCP is unavailable in this browser (enable chrome://flags/#enable-webmcp-testing)`, false);
             return;
         }
-        registerAll(mc, tools, { control }, confirm, onEvent);
-        setStatus(`WebMCP ready: ${tools.length} tools (${READ_TOOLS.length} read, ${WRITE_TOOLS.length} write, confirmed) · Open CAD Studio ${st.version}`);
+        registerAll(mc, tools, { control, capture, ui, session }, confirm, onEvent);
+        const confirmed = tools.filter((t) => t.write || t.confirm).length;
+        setStatus(`WebMCP ready: ${tools.length} tools (${tools.length - confirmed} free, ${confirmed} confirmed) · Open CAD Studio ${st.version}`);
         document.documentElement.dataset.ocsWebmcpReady = String(tools.length);
     })
     .catch((err) => setStatus(String(err.message ?? err), false));

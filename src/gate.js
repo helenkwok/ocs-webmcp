@@ -54,7 +54,9 @@ export function describeIntent(def, input) {
  * Wrap a tool definition's handler with the gate. This is the ONLY way a handler becomes an
  * `execute` function.
  *
- * @param def      { name, title, description, inputSchema, write?, handler(input, ctx) }
+ * @param def      { name, title, description, inputSchema, write?, confirm?, handler(input, ctx) }
+ *                 write:   mutates the drawing; confirmed, annotated destructive
+ *                 confirm: needs consent without mutating anything (e.g. screen recording)
  * @param ctx      passed through to the handler (the OcsControl, etc.)
  * @param confirm  (summary) => Promise<boolean>; called for every write, before the handler runs
  * @param onEvent  (event) => void; the activity trail ({tool, phase, detail})
@@ -64,7 +66,7 @@ export function makeGatedExecute(def, ctx, confirm, onEvent = () => {}) {
         const args = input ?? {};
         onEvent({ tool: def.name, phase: "called", write: !!def.write, args });
         try {
-            if (def.write) {
+            if (def.write || def.confirm) {
                 const approved = await confirm(describeIntent(def, args));
                 if (!approved) {
                     onEvent({ tool: def.name, phase: "declined" });
@@ -75,6 +77,11 @@ export function makeGatedExecute(def, ctx, confirm, onEvent = () => {}) {
             }
             const result = await def.handler(args, ctx);
             onEvent({ tool: def.name, phase: "ok" });
+            // A handler may return MCP content directly (e.g. an image plus a caption). Text parts
+            // are still capped; image parts pass through whole.
+            if (Array.isArray(result?.content)) {
+                return { content: result.content.map((c) => (c.type === "text" ? { ...c, text: cap(c.text) } : c)), isError: false };
+            }
             return text(cap(render(result)));
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -103,7 +110,7 @@ export function registerAll(modelContext, defs, ctx, confirm, onEvent) {
                 inputSchema: def.inputSchema,
                 annotations: {
                     // Honest, and advisory. The gate does not rely on them.
-                    readOnlyHint: !def.write,
+                    readOnlyHint: !def.write,   // `confirm` tools (recording) change nothing in the drawing
                     destructiveHint: !!def.write,
                     untrustedContentHint: true,
                 },
