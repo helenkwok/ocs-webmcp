@@ -20,7 +20,8 @@
 // Writes to <out>: prompt.md, agent.log, approvals.json, final.png, and run.mp4 with --record.
 // The recording runs from the moment the editor is ready (run-full.mp4). With --record-from
 // first-write (the default), run.mp4 is cut to start 2 s before the first request the human
-// answered, so the video does not open on minutes of the agent reading. (Starting the recorder at
+// answered (other than an empty ocs_new_drawing), so the video does not open on minutes of the
+// agent reading. (Starting the recorder at
 // that moment instead does not work: agent-browser runs one command per session at a time, so
 // `record start` would wait behind the agent's pending `webmcp result` and delay the approval.)
 
@@ -184,7 +185,9 @@ try {
     if (recordingSince) {
         ab("record", "stop");
         const full = resolve(OUT, "run-full.mp4"), cut = resolve(OUT, "run.mp4");
-        const first = approvals[0] ? Date.parse(approvals[0].at) : null;
+        // An empty new drawing shows nothing; agents often create one and then read for minutes.
+        const firstVisible = approvals.find((a) => !/^ocs_new_drawing\b/.test(a.shown.trim())) ?? approvals[0];
+        const first = firstVisible ? Date.parse(firstVisible.at) : null;
         const from = RECORD_FROM === "first-write" && first ? Math.max(0, (first - recordingSince) / 1000 - 2) : 0;
         execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", String(from), "-i", full, "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "20", cut]);
         console.log(`video: ${cut} (from ${from.toFixed(1)} s of the full recording)`);
