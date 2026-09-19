@@ -151,6 +151,12 @@ async function runCommandSteps(control, input) {
     changes.add(reply);
 
     for (const [i, step] of (input.steps ?? []).entries()) {
+        if (!STEP_SCHEMA.properties.kind.enum.includes(step?.kind)) {
+            await fail(`Step ${i + 1} has no valid kind (got ${JSON.stringify(step?.kind)}). Each step is an object like {"kind":"token","text":"3600"}; kind is one of ${STEP_SCHEMA.properties.kind.enum.join(", ")}.`);
+        }
+        if ((step.kind === "token" || step.kind === "text") && !step.text) {
+            await fail(`Step ${i + 1} is a ${step.kind} with no text. Put what you would type in "text", e.g. {"kind":"token","text":"3600"}.`);
+        }
         const asked = promptOf(reply.state?.command);
         if (!asked) await fail(`${input.cmd} finished before step ${i + 1}; the remaining ${input.steps.length - i} step(s) were not sent.`);
         // Upstream lists ONE input kind per prompt. A point step that also takes keyword letters

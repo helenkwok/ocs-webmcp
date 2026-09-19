@@ -6,7 +6,7 @@
 // A REC indicator is visible for the whole recording.
 
 import { Recording } from "../capture.js";
-import { PRESETS, STYLES, clickCanvas, faceOffsets, findCubeCentre } from "../viewcube.js";
+import { HALF_FACE, PRESETS, STYLES, clickCanvas, findCubeCentre, isUpright, screenOffset } from "../viewcube.js";
 
 const image = (img, caption) => ({
     content: [
@@ -62,27 +62,34 @@ export const MEDIA_TOOLS = [
             if (view === "zoom_extents" || view === "home") {
                 await action(view === "home" ? "view_home" : "zoom_extents");
             } else if (view) {
-                const preset = PRESETS[view];
                 const click = async (dx, dy) => {
                     const cube = await findCubeCentre(capture);
                     const from = cam(await control.state());
                     await clickCanvas(capture.canvas(), cube.x + dx, cube.y + dy);
                     await settleCamera(from);
                 };
-                const via = preset.via ? PRESETS[preset.via] : preset;
-                await action("view_home");
-                if (view !== "top") await click(via.dx, via.dy);
-                if (preset.face) {
-                    for (const o of faceOffsets((await control.state()).camera?.rotation ?? [0, 0, 0, 1], preset.face)) {
-                        await click(o.dx, o.dy);
-                        if (Math.abs(((await control.state()).camera?.pitch ?? NaN) - preset.pitch) < 0.02) break;
+                const rotation = async () => (await control.state()).camera?.rotation ?? [0, 0, 0, 1];
+                const reach = async (name) => {
+                    const p = PRESETS[name];
+                    if (name === "top") return action("view_home");
+                    if (p.face) {
                         await action("view_home");
-                        await click(via.dx, via.dy);
+                        await click(...p.plan);
+                        const o = screenOffset(await rotation(), p.face, HALF_FACE);
+                        if (!o) throw new Error(`the ${name} face is not visible on the ViewCube`);
+                        return click(o.dx, o.dy);
                     }
-                }
-                const got = (await control.state()).camera?.pitch ?? NaN;
-                if (!(Math.abs(got - preset.pitch) < 0.02)) {
-                    throw new Error(`The view did not change to ${view}: camera pitch is ${r3((got * 180) / Math.PI)}°, expected ${r3((preset.pitch * 180) / Math.PI)}°.`);
+                    await reach(p.via);
+                    const o = screenOffset(await rotation(), p.corner);
+                    if (!o) throw new Error(`the ${name} corner is not visible on the ViewCube`);
+                    return click(o.dx, o.dy);
+                };
+                const preset = PRESETS[view];
+                await reach(view);
+                const c = (await control.state()).camera ?? {};
+                const upright = isUpright(c.rotation ?? [0, 0, 0, 1], c.pitch ?? NaN);
+                if (!(Math.abs((c.pitch ?? NaN) - preset.pitch) < 0.02) || !upright) {
+                    throw new Error(`The view did not change to ${view}: camera pitch ${r3(((c.pitch ?? NaN) * 180) / Math.PI)}° (expected ${r3((preset.pitch * 180) / Math.PI)}°)${upright ? "" : ", and the camera is rolled (world Z is not up on screen)"}.`);
                 }
                 if (input.fit !== false) await action("zoom_extents");
             }

@@ -17,19 +17,30 @@
 const HALF = 84 * 0.36;
 const CORNER = 0.9 * HALF;
 
-/** Offset from the cube centre in the plan view (screen y grows downwards), and the camera pitch to expect. */
+/**
+ * How each preset is reached, and the camera pitch it must end at.
+ *  - top: `view_home`.
+ *  - Elevations: from the plan view a corner click gives the right pitch but keeps screen-up =
+ *    north, i.e. a ROLLED camera; clicking a side face from there gives a true elevation (Z up).
+ *    So: plan -> corner (`plan` offset) -> the face.
+ *  - Isometrics: from an elevation (Z up), a corner click gives a true isometric. So: the
+ *    elevation `via` -> the corner.
+ * Every result is checked for pitch AND roll (isUpright): pitch and yaw alone do not reveal a
+ * rolled camera, which is how an earlier version shipped rolled "isometrics".
+ */
+const ISO_PITCH = Math.atan(1 / Math.SQRT2);
+const M = 0.9; // corner-region centroid, cube units
+export const HALF_FACE = HALF * 0.7; // a face click lands well inside the face, clear of its edges
 export const PRESETS = {
-    top: { dx: 0, dy: 0, pitch: Math.PI / 2 },
-    iso_se: { dx: CORNER, dy: CORNER, pitch: Math.atan(1 / Math.SQRT2) },
-    iso_sw: { dx: -CORNER, dy: CORNER, pitch: Math.atan(1 / Math.SQRT2) },
-    iso_ne: { dx: CORNER, dy: -CORNER, pitch: Math.atan(1 / Math.SQRT2) },
-    iso_nw: { dx: -CORNER, dy: -CORNER, pitch: Math.atan(1 / Math.SQRT2) },
-    // Elevations: the compass letters do not respond to a synthetic click, so these go via an
-    // isometric view where the face is visible, then click the face's projected centre.
-    front: { via: "iso_se", face: [0, -1, 0], pitch: 0 },
-    right: { via: "iso_se", face: [1, 0, 0], pitch: 0 },
-    back: { via: "iso_nw", face: [0, 1, 0], pitch: 0 },
-    left: { via: "iso_nw", face: [-1, 0, 0], pitch: 0 },
+    top: { pitch: Math.PI / 2 },
+    front: { plan: [CORNER, CORNER], face: [0, -1, 0], pitch: 0 },
+    right: { plan: [CORNER, CORNER], face: [1, 0, 0], pitch: 0 },
+    back: { plan: [-CORNER, -CORNER], face: [0, 1, 0], pitch: 0 },
+    left: { plan: [-CORNER, -CORNER], face: [-1, 0, 0], pitch: 0 },
+    iso_se: { via: "front", corner: [M, -M, M], pitch: ISO_PITCH },
+    iso_sw: { via: "front", corner: [-M, -M, M], pitch: ISO_PITCH },
+    iso_ne: { via: "back", corner: [M, M, M], pitch: ISO_PITCH },
+    iso_nw: { via: "back", corner: [-M, M, M], pitch: ISO_PITCH },
 };
 
 /** Rotate v by quaternion q = [x, y, z, w]; with inverse, by its conjugate. */
@@ -40,15 +51,22 @@ function rotate([qx, qy, qz, qw], [vx, vy, vz], inverse = false) {
 }
 
 /**
- * Screen offset of a cube face's centre from the cube centre, for the camera rotation reported
- * in state (upstream does not document which way that rotation maps, so both are offered and the
- * caller verifies the result).
+ * Screen offset of a cube point from the cube centre, or null when it faces away. The camera's
+ * reported rotation maps the camera frame to the world (measured: plan = identity, front = 90
+ * degrees about X, taking camera-up (0,1,0) to world +Z), so a world point is seen through the
+ * INVERSE rotation. Screen y grows downwards.
  */
-export function faceOffsets(rotation, face) {
-    return [false, true]
-        .map((inverse) => rotate(rotation, face, inverse))
-        .filter(([, , z]) => z > 0.05)
-        .map(([x, y]) => ({ dx: x * HALF * 0.7, dy: -y * HALF * 0.7 }));
+export function screenOffset(rotation, point, scale = HALF) {
+    const [x, y, z] = rotate(rotation, point, true);
+    return z > 0.05 ? { dx: x * scale, dy: -y * scale } : null;
+}
+
+/** True when the view is not rolled: the screen's horizontal is level in the world (plan view excepted). */
+export function isUpright(rotation, pitch) {
+    if (Math.abs(pitch - Math.PI / 2) < 0.02) return true;
+    const right = rotate(rotation, [1, 0, 0]);
+    const up = rotate(rotation, [0, 1, 0]);
+    return Math.abs(right[2]) < 0.02 && up[2] > 0.05;
 }
 
 /** Visual styles, by VSCURRENT keyword. */
