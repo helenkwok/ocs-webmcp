@@ -314,6 +314,40 @@ try {
     const circlesAfter = (await countOf()).Circle;
     check("ocs_batch stops at the first failure and says what ran", /batch_stopped/.test(payload(r.raw)) && /Step 2/.test(payload(r.raw)) && circlesAfter === circlesBefore + 1, `circles ${circlesBefore}→${circlesAfter} · ${payload(r.raw).slice(0, 220)}`);
 
+    // ── 3D: extrude, preset views, visual style ──
+    await call("ocs_new_drawing", {}, true);
+    await call("ocs_run_command", { cmd: "PLINE 0,0 40,0 40,20 0,20 C" }, true);
+    const plh = (json((await call("ocs_spatial_query", { type: "LwPolyline" })).raw)?.entities ?? [])[0]?.handle
+        ?? (json((await call("ocs_spatial_query", {})).raw)?.entities ?? [])[0]?.handle;
+    r = await call("ocs_command_steps", { cmd: "EXTRUDE", select: [plh], steps: [{ kind: "token", text: "10" }] }, true);
+    const solid = (json((await call("ocs_spatial_query", {})).raw)?.entities ?? []).find((e) => /solid/i.test(e.type));
+    const mass = json((await call("ocs_measure", { handles: [solid?.handle ?? "0"] })).raw)?.measurements?.[0]?.mesh;
+    check("EXTRUDE via ocs_command_steps makes a 40×20×10 solid", Math.abs(mass?.volume - 8000) < 1e-3 && Math.abs(mass?.centroid?.[2] - 5) < 1e-6, `volume=${mass?.volume} centroid=${JSON.stringify(mass?.centroid)} · ${payload(r.raw).replace(/\s+/g, " ").slice(0, 160)}`);
+    for (const [view, pitch] of [["iso_se", 35.264], ["iso_nw", 35.264], ["front", 0], ["right", 0], ["back", 0], ["left", 0], ["top", 90]]) {
+        r = await call("ocs_set_view", { view });
+        const a = json(r.raw)?.camera_after;
+        check(`ocs_set_view ${view} (pitch ${pitch}°)`, !isError(r.raw) && Math.abs(a?.pitch_deg - pitch) < 1, `pitch=${a?.pitch_deg} yaw=${a?.yaw_deg} · ${isError(r.raw) ? payload(r.raw).slice(0, 200) : ""}`);
+    }
+    const yaws = [];
+    for (const view of ["iso_se", "iso_sw", "iso_ne", "iso_nw"]) yaws.push(json((await call("ocs_set_view", { view })).raw)?.camera_after?.yaw_deg);
+    check("the four isometric views face four different ways", new Set(yaws.map((y) => Math.round(y))).size === 4, JSON.stringify(yaws));
+    // A shaded solid covers far more of the viewport than its wireframe does.
+    const drawnShare = (b64, mime) => ev(`(async () => { const i = new Image(); i.src = 'data:${mime};base64,' + ${JSON.stringify(b64)}; await i.decode();
+        const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const g = c.getContext('2d'); g.drawImage(i, 0, 0);
+        const x0 = Math.round(i.width * 0.3), y0 = Math.round(i.height * 0.25), w = Math.round(i.width * 0.5), h = Math.round(i.height * 0.6);
+        const d = g.getImageData(x0, y0, w, h).data; let lit = 0;
+        for (let k = 0; k < d.length; k += 4) if ((d[k] + d[k+1] + d[k+2]) / 3 > 60) lit++;
+        return +(lit / (w * h)).toFixed(4) })()`);
+    await call("ocs_set_view", { view: "iso_se", style: "wireframe_2d" });
+    const wire = imgOf((await call("ocs_capture_view", { max_width: 1024 })).raw);
+    r = await call("ocs_set_view", { view: "iso_se", style: "shaded_with_edges" });
+    const shaded = imgOf((await call("ocs_capture_view", { max_width: 1024 })).raw);
+    const shareWire = wire ? await drawnShare(wire.data, wire.mimeType) : null;
+    const shareShaded = shaded ? await drawnShare(shaded.data, shaded.mimeType) : null;
+    if (shaded) writeFileSync(resolve(OUT, "capture-3d-shaded.jpg"), Buffer.from(shaded.data, "base64"));
+    check("style shaded_with_edges really shades the solid (drawn share ≫ wireframe)", !isError(r.raw) && shareShaded > 5 * shareWire && shareShaded > 0.05, `wireframe=${shareWire} shaded=${shareShaded} · ${payload(r.raw).slice(0, 120)}`);
+    await call("ocs_set_view", { view: "top", style: "wireframe_2d" });
+
     // open from bytes
     const DXF = ["0","SECTION","2","ENTITIES","0","LINE","8","0","10","0","20","0","30","0","11","25","21","10","31","0",
         "0","CIRCLE","8","0","10","12","20","5","30","0","40","3","0","ENDSEC","0","EOF",""].join("\r\n");

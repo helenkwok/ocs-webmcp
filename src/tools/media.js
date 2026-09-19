@@ -6,6 +6,7 @@
 // A REC indicator is visible for the whole recording.
 
 import { Recording } from "../capture.js";
+import { PRESETS, STYLES, clickCanvas, faceOffsets, findCubeCentre } from "../viewcube.js";
 
 const image = (img, caption) => ({
     content: [
@@ -19,24 +20,91 @@ export const MEDIA_TOOLS = [
         name: "ocs_set_view",
         title: "Frame the view",
         description:
-            "Change only the camera, never the drawing: zoom_extents fits everything drawn into the viewport (do this before ocs_capture_view, because a new drawing does not zoom to fit); home resets the view.",
-        inputSchema: { type: "object", properties: { view: { type: "string", enum: ["zoom_extents", "home"], description: "Default zoom_extents." } } },
-        handler: async (input, { control }) => {
+            "Change how the drawing is viewed, never the drawing itself. view: zoom_extents fits everything drawn (do this before ocs_capture_view; a new drawing does not zoom to fit); home resets to plan; top, iso_se/iso_sw/iso_ne/iso_nw (isometric, for 3D) and front/back/right/left (elevations) are preset views, fitted to the drawing unless fit is false. style sets the visual style (shaded shows solids as surfaces; wireframe_2d is the drafting default); it is stored with the viewport.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                view: { type: "string", enum: ["zoom_extents", "home", ...Object.keys(PRESETS)], description: "Default zoom_extents (unless only style is given)." },
+                style: { type: "string", enum: Object.keys(STYLES) },
+                fit: { type: "boolean", description: "After a preset view, zoom to everything drawn. Default true." },
+            },
+        },
+        handler: async (input, { control, capture }) => {
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            const r3 = (v) => Math.round(v * 1000) / 1000;
+            const cam = (s) => ({
+                target: s.camera?.target?.map(r3), distance: r3(s.camera?.distance ?? 0),
+                pitch_deg: r3(((s.camera?.pitch ?? 0) * 180) / Math.PI), yaw_deg: r3(((s.camera?.yaw ?? 0) * 180) / Math.PI),
+            });
             const st = await control.state();
-            const cam = (s) => ({ target: s.camera?.target?.map((v) => Math.round(v * 1000) / 1000), distance: Math.round((s.camera?.distance ?? 0) * 1000) / 1000 });
+            const document_id = st.document_id;
             const before = cam(st);
-            await control.must({ op: "action", request_id: control.nextRequestId("view"), document_id: st.document_id, name: input.view === "home" ? "view_home" : "zoom_extents" });
-            // Wait until the camera has actually moved (or give up), then let it repaint.
-            let after = before;
-            for (let i = 0; i < 30; i++) {
-                await new Promise((r) => setTimeout(r, 50));
-                after = cam(await control.state());
-                if (JSON.stringify(after) !== JSON.stringify(before)) break;
+            const settleCamera = async (from) => {
+                // Wait for the camera to move, then for it to stop (the cube may animate).
+                let prev = from, now = from;
+                for (let i = 0; i < 40; i++) {
+                    await sleep(50);
+                    now = cam(await control.state());
+                    if (JSON.stringify(now) !== JSON.stringify(from) && JSON.stringify(now) === JSON.stringify(prev)) break;
+                    prev = now;
+                }
+                await sleep(150);
+                return now;
+            };
+            const action = async (name) => {
+                const from = cam(await control.state());
+                await control.must({ op: "action", request_id: control.nextRequestId("view"), document_id, name });
+                return settleCamera(from);
+            };
+            const out = { camera_before: before };
+
+            const view = input.view ?? (input.style ? null : "zoom_extents");
+            if (view === "zoom_extents" || view === "home") {
+                await action(view === "home" ? "view_home" : "zoom_extents");
+            } else if (view) {
+                const preset = PRESETS[view];
+                const click = async (dx, dy) => {
+                    const cube = await findCubeCentre(capture);
+                    const from = cam(await control.state());
+                    await clickCanvas(capture.canvas(), cube.x + dx, cube.y + dy);
+                    await settleCamera(from);
+                };
+                const via = preset.via ? PRESETS[preset.via] : preset;
+                await action("view_home");
+                if (view !== "top") await click(via.dx, via.dy);
+                if (preset.face) {
+                    for (const o of faceOffsets((await control.state()).camera?.rotation ?? [0, 0, 0, 1], preset.face)) {
+                        await click(o.dx, o.dy);
+                        if (Math.abs(((await control.state()).camera?.pitch ?? NaN) - preset.pitch) < 0.02) break;
+                        await action("view_home");
+                        await click(via.dx, via.dy);
+                    }
+                }
+                const got = (await control.state()).camera?.pitch ?? NaN;
+                if (!(Math.abs(got - preset.pitch) < 0.02)) {
+                    throw new Error(`The view did not change to ${view}: camera pitch is ${r3((got * 180) / Math.PI)}°, expected ${r3((preset.pitch * 180) / Math.PI)}°.`);
+                }
+                if (input.fit !== false) await action("zoom_extents");
             }
-            await new Promise((r) => setTimeout(r, 150));
+            // After the view: a view change re-applies the viewport's stored render mode.
+            if (input.style) {
+                // `start` hands the WHOLE line to the dispatcher, which applies `VSCURRENT <style>` in one
+                // step. `run` splits it into VSCURRENT's keyword picker plus an answer, and upstream's
+                // CmdResult::Dispatch drops the resulting SetRenderMode (`let _ = dispatch_command(..)`),
+                // so through `run` the style is announced but never applied.
+                const reply = await control.settled({ op: "start", request_id: control.nextRequestId("style"), document_id, cmd: `VSCURRENT ${STYLES[input.style]}` });
+                if (reply?.ok === false) throw new Error(`VSCURRENT failed: ${reply.error ?? reply.code}`);
+                if (reply?.state?.command) {
+                    await control.settled({ op: "cancel", request_id: control.nextRequestId("style-x"), document_id });
+                    throw new Error(`VSCURRENT did not take ${STYLES[input.style]}; it is still asking: ${reply.state.command.prompt}`);
+                }
+                out.style = input.style;
+            }
+
+            const after = cam(await control.state());
             return {
-                view: input.view ?? "zoom_extents",
-                camera_before: before,
+                view,
+                ...out,
                 camera_after: after,
                 moved: JSON.stringify(after) !== JSON.stringify(before),
                 note: "Open CAD Studio fits to the whole viewport, including the strip under its floating command-line panel, so geometry at the very bottom edge can be hidden behind that panel.",

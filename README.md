@@ -48,8 +48,16 @@ those exports in a **same-origin iframe**, so nothing upstream needs a plugin ho
 intersections: how an agent finds the handles to pick)
 
 **See (no confirm):** `ocs_capture_view` (screenshot: JPEG/PNG, `max_width`, `if_changed` +
-`threshold` to skip unchanged views and save tokens) · `ocs_set_view` (`zoom_extents` / `home`;
-the camera only, never the drawing)
+`threshold` to skip unchanged views and save tokens) · `ocs_set_view` (`zoom_extents` / `home`,
+preset views `top`, `iso_se`/`iso_sw`/`iso_ne`/`iso_nw`, `front`/`back`/`right`/`left`, and a
+visual `style` such as `shaded_with_edges`; never the drawing's geometry)
+
+Preset views: the web build has no command or control action for them, so `ocs_set_view` clicks
+Open CAD Studio's ViewCube the way a user would (`src/viewcube.js`): it finds the cube in a
+captured frame, clicks the position upstream's own hit test maps to that view, and checks the
+camera actually reached the expected pitch before reporting success. Visual styles go through
+`start` with the whole line (`VSCURRENT <style>`): through `run`, upstream's keyword picker
+announces the style but drops the message that applies it.
 
 **Record (starting it waits for a human):** `ocs_start_recording` → `ocs_stop_recording`. The
 human gets the video (**MP4**, or WebM where MP4 can't be recorded) as a download in the activity
@@ -119,7 +127,7 @@ at **exactly** the version in upstream's `Cargo.lock` (0.2.108 at the pinned com
 npm run build      # clone upstream at the pinned commit, build it unmodified, assemble dist/
 OCS_COMMIT=<sha> npm run build   # same, at another upstream commit (dist/ocs-source.json: pinned=false)
 npm run serve      # http://127.0.0.1:8787/ with the COOP/COEP headers upstream expects
-npm run test:e2e   # 46 checks through real WebMCP in headless Chrome (47 where constraints exist)
+npm run test:e2e   # 56 checks through real WebMCP in headless Chrome (57 where constraints exist)
 node scripts/open-file.mjs plan.dwg   # open a real DWG/DXF through the tools; report + zoomed screenshot
 node scripts/demo.mjs plan.dwg        # record a demo video, driven through agent-browser (needs ffmpeg)
 ```
