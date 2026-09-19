@@ -54,7 +54,7 @@ try {
     if (!ready) throw new Error("not ready");
 
     const tools = JSON.parse(await ev(`(async () => JSON.stringify((await document.modelContext.getTools()).map(t => ({ name: t.name, annotations: t.annotations }))))()`));
-    check("getTools() lists 19 tools", tools.length === 19, tools.map((t) => t.name).join(", "));
+    check("getTools() lists 24 tools", tools.length === 24, tools.map((t) => t.name).join(", "));
 
     // Start a tool call WITHOUT awaiting it, so a confirm dialog can be answered meanwhile.
     const start = (name, input = {}) => ev(`(() => {
@@ -230,6 +230,89 @@ try {
     const mp4 = await ev(`(async () => { const a = document.querySelector('[data-ocs-download]'); const b = await (await fetch(a.href)).blob();
         const u = new Uint8Array(await b.arrayBuffer()); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode(...u.subarray(i, i + 0x8000)); return btoa(s) })()`);
     writeFileSync(resolve(OUT, "recording.mp4"), Buffer.from(mp4, "base64"));
+
+    // ── step-by-step commands, measure, spatial query, layers, batch (fresh drawing) ──
+    await call("ocs_new_drawing", {}, true);
+    const countOf = async () => json((await call("ocs_count_entities")).raw)?.by_type ?? {};
+    r = await call("ocs_batch", { steps: [
+        { tool: "ocs_run_command", input: { cmd: "LINE 0,0 20,0 " } },
+        { tool: "ocs_run_command", input: { cmd: "LINE 20,0 20,20 " } },
+        { tool: "ocs_run_command", input: { cmd: "CIRCLE 50,25 10" } },
+    ] }, true);
+    let byType = await countOf();
+    check("ocs_batch runs 3 edits under ONE approval, dialog lists every step", json(r.raw)?.ran === 3 && byType.Line === 2 && byType.Circle === 1 && /^1\. ocs_run_command/m.test(r.shown ?? "") && /^3\. ocs_run_command/m.test(r.shown ?? ""), `dialog=${JSON.stringify(r.shown)} count=${JSON.stringify(byType)}`);
+
+    r = await call("ocs_batch", { steps: [{ tool: "ocs_run_command", input: { cmd: "CIRCLE 0,0 1" } }] }, false);
+    check("declined ocs_batch runs nothing", /REFUSED/.test(payload(r.raw)) && (await countOf()).Circle === 1, payload(r.raw).slice(0, 80));
+
+    const lines = json((await call("ocs_query_records", { type: "Line", paths: ["/start", "/end"] })).raw)?.records ?? [];
+    const [hA, hB] = lines.map((x) => x.handle);
+    r = await call("ocs_spatial_query", { near: [49, 36], limit: 1 });
+    const nearest = json(r.raw)?.entities?.[0];
+    check("ocs_spatial_query near finds the circle", nearest?.type === "Circle", payload(r.raw).slice(0, 160));
+    r = await call("ocs_spatial_query", { intersections: [hA, hB] });
+    const ip = json(r.raw)?.intersections?.[0]?.point;
+    check("ocs_spatial_query intersections of the two lines = [20,0]", ip?.[0] === 20 && ip?.[1] === 0, payload(r.raw).slice(0, 160));
+    r = await call("ocs_measure", { handles: [nearest?.handle] });
+    const m = json(r.raw)?.measurements?.[0]?.curve;
+    check("ocs_measure circle r=10: area πr², length 2πr", Math.abs(m?.area - Math.PI * 100) < 1e-6 && Math.abs(m?.length - 20 * Math.PI) < 1e-6, JSON.stringify(m));
+
+    r = await call("ocs_command_steps", { cmd: "FILLET", steps: [{ kind: "selection" }] }, true);
+    const stAfterBad = json((await call("ocs_get_state")).raw);
+    check("ocs_command_steps refuses a step the prompt does not accept, and leaves nothing running", /accepts/.test(payload(r.raw)) && stAfterBad?.active_command == null && (await countOf()).Line === 2, payload(r.raw).slice(0, 200));
+
+    r = await call("ocs_command_steps", { cmd: "FILLET", steps: [
+        { kind: "token", text: "R" }, { kind: "token", text: "5" },
+        { kind: "entity", handle: hA, point: [15, 0] }, { kind: "entity", handle: hB, point: [20, 15] },
+    ] }, true);
+    const fil = json(r.raw);
+    byType = await countOf();
+    check("ocs_command_steps FILLET R5 adds an arc, reports replaced handles, auto-cancels the restart", byType.Arc === 1 && byType.Line === 2 && fil?.changes?.added?.length >= 1 && fil?.changes?.removed?.length >= 1 && !!fil?.auto_cancelled_at && fil?.still_waiting == null, `count=${JSON.stringify(byType)} changes=${JSON.stringify(fil?.changes)} auto_cancelled_at=${JSON.stringify(fil?.auto_cancelled_at)} reply=${payload(r.raw).replace(/\s+/g, " ").slice(0, 700)}`);
+
+    const vertical = (json((await call("ocs_spatial_query", { type: "Line", near: [20, 15], limit: 1 })).raw)?.entities ?? [])[0];
+    const yBefore = json((await call("ocs_measure", { handles: [vertical?.handle] })).raw)?.measurements?.[0]?.bounds?.max?.[1];
+    r = await call("ocs_command_steps", { cmd: "MOVE", select: [vertical?.handle], steps: [{ kind: "point", point: [0, 0] }, { kind: "point", point: [0, -10] }] }, true);
+    const yAfter = json((await call("ocs_measure", { handles: [vertical?.handle] })).raw)?.measurements?.[0]?.bounds?.max?.[1];
+    check("ocs_command_steps MOVE on a selection moves it by exactly 10", Math.abs(yBefore - yAfter - 10) < 1e-9, `top y ${yBefore} → ${yAfter} · ${payload(r.raw).slice(0, 160)}`);
+
+    r = await call("ocs_set_layer", { name: "0", visible: false }, true);
+    const hidden = json(r.raw);
+    r = await call("ocs_set_layer", { name: "0", visible: false }, true);
+    const again = json(r.raw);
+    check("ocs_set_layer hides a layer; repeating changes nothing", hidden?.visible === false && JSON.stringify(hidden?.changed) === '["off"]' && again?.visible === false && again?.changed?.length === 0, `${JSON.stringify(hidden)} then ${JSON.stringify(again)}`);
+    r = await call("ocs_set_layer", { name: "0", visible: true, current: true }, true);
+    check("ocs_set_layer shows it again; current layer confirmed", json(r.raw)?.visible === true && json(r.raw)?.current === true, payload(r.raw).slice(0, 160));
+    r = await call("ocs_set_layer", { name: "NoSuchLayer", visible: false }, true);
+    check("ocs_set_layer on a missing layer is refused", /unknown_layer/.test(payload(r.raw)), payload(r.raw).slice(0, 120));
+
+    // Geometric constraints arrived upstream after v2026.37; check them where the build has them.
+    const hasConstraints = !isError((await call("ocs_list_commands", { name: "GCPERPENDICULAR" })).raw) && /GCPERPENDICULAR/.test(payload((await call("ocs_list_commands", { search: "GCPERP" })).raw));
+    if (hasConstraints) {
+        await call("ocs_batch", { steps: [
+            { tool: "ocs_run_command", input: { cmd: "LINE 100,0 120,0 " } },
+            { tool: "ocs_run_command", input: { cmd: "LINE 120,0 130,15 " } },
+        ] }, true);
+        const pair = (json((await call("ocs_spatial_query", { type: "Line", bounds: [99, -1, 131, 16] })).raw)?.entities ?? []).map((e) => e.handle);
+        r = await call("ocs_command_steps", { cmd: "GCPERPENDICULAR", steps: [
+            { kind: "entity", handle: pair[0], point: [110, 0] }, { kind: "entity", handle: pair[1], point: [125, 7.5] },
+        ] }, true);
+        const ends = (json((await call("ocs_query_records", { type: "Line", where: [{ path: "/start/x", op: "gte", value: 99 }], paths: ["/start", "/end"] })).raw)?.records ?? []).map((x) => [x.values["/start"], x.values["/end"]]);
+        const dir = ([a, b]) => [b.x - a.x, b.y - a.y];
+        const [d1, d2] = ends.map(dir);
+        const dot = d1 && d2 ? Math.abs(d1[0] * d2[0] + d1[1] * d2[1]) : NaN;
+        check("ocs_command_steps GCPERPENDICULAR makes two lines perpendicular", ends.length === 2 && dot < 1e-6, `dot=${dot} ends=${JSON.stringify(ends)} · ${payload(r.raw).replace(/\s+/g, " ").slice(0, 200)}`);
+    } else {
+        console.log("- skipped: geometric constraints (not in this build)");
+    }
+
+    const circlesBefore = (await countOf()).Circle;
+    r = await call("ocs_batch", { steps: [
+        { tool: "ocs_run_command", input: { cmd: "CIRCLE 0,0 1" } },
+        { tool: "ocs_set_layer", input: { name: "NoSuchLayer", visible: false } },
+        { tool: "ocs_run_command", input: { cmd: "CIRCLE 0,0 2" } },
+    ] }, true);
+    const circlesAfter = (await countOf()).Circle;
+    check("ocs_batch stops at the first failure and says what ran", /batch_stopped/.test(payload(r.raw)) && /Step 2/.test(payload(r.raw)) && circlesAfter === circlesBefore + 1, `circles ${circlesBefore}→${circlesAfter} · ${payload(r.raw).slice(0, 220)}`);
 
     // open from bytes
     const DXF = ["0","SECTION","2","ENTITIES","0","LINE","8","0","10","0","20","0","30","0","11","25","21","10","31","0",

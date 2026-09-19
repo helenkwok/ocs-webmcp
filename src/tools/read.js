@@ -128,4 +128,42 @@ export const READ_TOOLS = [
             return { entries: (h.entries ?? []).slice(-(input.last ?? 30)) };
         },
     },
+    {
+        name: "ocs_measure",
+        title: "Measure entities",
+        description:
+            "Exact geometry for up to 100 entities by handle: bounding box, and for curves their length, whether they are closed, and enclosed area; for solids and meshes, surface area, volume, centroid and mass properties. Use it to check the result of an edit by numbers rather than by eye.",
+        inputSchema: {
+            type: "object",
+            properties: { handles: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100, description: "Hex entity handles, e.g. [\"62\", \"1A3\"]." } },
+            required: ["handles"],
+        },
+        handler: async (input, { control }) => control.must({ op: "measure", handles: input.handles }),
+    },
+    {
+        name: "ocs_spatial_query",
+        title: "Find entities by position",
+        description:
+            "Find entities by where they are, which is how to get the handles to pick in ocs_command_steps. Filters combine: `near` sorts by distance from a point (with each entity's closest point), `contains_point` keeps closed entities around a point, `bounds` keeps entities inside a box, plus `type` and `layer`. Or pass `intersections` with two handles for the points where they cross.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                near: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3, description: "[x, y] or [x, y, z]; results nearest first." },
+                contains_point: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 3, description: "[x, y]: closed entities that contain it." },
+                bounds: { type: "array", items: { type: "number" }, minItems: 4, maxItems: 4, description: "[min_x, min_y, max_x, max_y]." },
+                type: { type: "string", description: "Entity type, e.g. Line, Circle, LwPolyline, Insert." },
+                layer: { type: "string" },
+                intersections: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 2, description: "Two handles; returns their intersection points. Other filters are ignored." },
+                detail: { type: "string", enum: ["summary", "geometry", "full"], description: "Default geometry." },
+                limit: { type: "integer", minimum: 1, maximum: 200, description: "Default 20." },
+                offset: { type: "integer", minimum: 0 },
+            },
+        },
+        handler: async (input, { control }) => {
+            if (input.intersections) return control.must({ op: "query", intersections: input.intersections });
+            const req = { op: "query", limit: input.limit ?? 20 };
+            for (const k of ["near", "contains_point", "bounds", "type", "layer", "detail", "offset"]) if (input[k] !== undefined) req[k] = input[k];
+            return control.must(req);
+        },
+    },
 ];

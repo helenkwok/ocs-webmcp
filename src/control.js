@@ -73,6 +73,23 @@ export class OcsControl {
         throw new Error(`Open CAD Studio did not answer "${req.op}" within ${timeoutMs} ms (ticket ${ticket})`);
     }
 
+    /**
+     * Send a write op and wait for its FINAL reply. A queued op first answers `accepted` or
+     * `running`; the final status (`completed`, `waiting_input`, `cancelled`, `failed`) and the
+     * `changes` it made come from polling `operation` with the same request_id.
+     */
+    async settled(req, { timeoutMs = 30_000 } = {}) {
+        let reply = await this.request(req);
+        const t0 = performance.now();
+        let wait = POLL_START_MS;
+        while (["accepted", "running"].includes(reply?.status) && performance.now() - t0 < timeoutMs) {
+            await sleep(wait);
+            wait = Math.min(POLL_MAX_MS, wait * 2);
+            reply = await this.request({ op: "operation", request_id: req.request_id });
+        }
+        return reply;
+    }
+
     /** Like request(), but throws a ControlError on `{ok:false}`. */
     async must(req, opts) {
         const reply = await this.request(req, opts);

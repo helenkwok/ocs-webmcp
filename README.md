@@ -12,7 +12,7 @@ server drives, running in the browser tab.
 
 | | |
 |---|---|
-| **This repository (MIT)** | The WebMCP layer (`src/`): 19 tools, the registration gate, the human confirm dialog, the activity trail, the control-channel client. The shell (`shell/`). The build and test scripts (`scripts/`). |
+| **This repository (MIT)** | The WebMCP layer (`src/`): 24 tools, the registration gate, the human confirm dialog, the activity trail, the control-channel client. The shell (`shell/`). The build and test scripts (`scripts/`). |
 | **Not ours (GPL-3.0-only)** | The CAD application itself: Open CAD Studio by Hakan Seven and contributors, including its DWG/DXF engine. **Built unmodified** from a pinned upstream commit; no upstream file is edited. |
 
 The combined deployment is a GPL-3.0 work. See [NOTICE.md](NOTICE.md) for its Corresponding
@@ -21,7 +21,7 @@ Source.
 ## How it works
 
 ```
- browser tab (document.modelContext: 19 tools)
+ browser tab (document.modelContext: 24 tools)
  ┌──────────────────────────────────────────────┬──────────────────┐
  │ /  shell  (MIT)                              │ agent activity   │
  │   registers tools → gate → confirm dialog     │  (every call)    │
@@ -42,7 +42,10 @@ those exports in a **same-origin iframe**, so nothing upstream needs a plugin ho
 
 **Read (no confirm):** `ocs_get_state` · `ocs_get_capabilities` · `ocs_count_entities` ·
 `ocs_query_records` (filters, JSON-Pointer projections, paging) · `ocs_get_record_schema` ·
-`ocs_list_commands` (vocabulary, or one command's exact prompts) · `ocs_get_history`
+`ocs_list_commands` (vocabulary, or one command's exact prompts) · `ocs_get_history` ·
+`ocs_measure` (bounds, curve length and area, solid/mesh mass properties) · `ocs_spatial_query`
+(nearest to a point, containing a point, inside a box, by type/layer; or two entities'
+intersections: how an agent finds the handles to pick)
 
 **See (no confirm):** `ocs_capture_view` (screenshot: JPEG/PNG, `max_width`, `if_changed` +
 `threshold` to skip unchanged views and save tokens) · `ocs_set_view` (`zoom_extents` / `home`;
@@ -57,7 +60,20 @@ and the changed region outlined. An agent can't watch a video, but it can read a
 drawings; tool arguments are size-limited, e.g. agent-browser caps them at 1 MB; or base64/DXF text
 for small files) · `ocs_add_text` (single-line note; TEXT's in-canvas editor can't be filled by a
 command line) · `ocs_run_command` · `ocs_cancel_command` · `ocs_set_properties` ·
-`ocs_undo` · `ocs_redo`
+`ocs_undo` · `ocs_redo` ·
+`ocs_command_steps` (a command answered prompt by prompt, with entity picks by handle: FILLET,
+TRIM, OFFSET, MOVE on a selection, and geometric constraints on builds that have them; reports the
+handles added, removed and modified, since such edits replace entities) · `ocs_set_layer`
+(visible / frozen / locked / current, set rather than toggled) · `ocs_batch` (several of the edits
+above under ONE approval; the dialog lists every step; stops at the first failure)
+
+The editor reports what each prompt accepts; `ocs_command_steps` refuses a step of another kind
+before sending it. One exception: on builds after v2026.37 a point step that also takes keyword
+letters (MOVE/COPY's base point with `[Displacement]`) is reported as accepting only `token`, so a
+point is let through wherever a token is.
+
+**Not possible through automation yet:** creating a layer (no command, action or record op for
+it upstream).
 
 ### Screenshots and recording: how
 
@@ -103,7 +119,7 @@ at **exactly** the version in upstream's `Cargo.lock` (0.2.108 at the pinned com
 npm run build      # clone upstream at the pinned commit, build it unmodified, assemble dist/
 OCS_COMMIT=<sha> npm run build   # same, at another upstream commit (dist/ocs-source.json: pinned=false)
 npm run serve      # http://127.0.0.1:8787/ with the COOP/COEP headers upstream expects
-npm run test:e2e   # 34 checks through real WebMCP in headless Chrome
+npm run test:e2e   # 46 checks through real WebMCP in headless Chrome (47 where constraints exist)
 node scripts/open-file.mjs plan.dwg   # open a real DWG/DXF through the tools; report + zoomed screenshot
 node scripts/demo.mjs plan.dwg        # record a demo video, driven through agent-browser (needs ffmpeg)
 ```
@@ -123,7 +139,7 @@ agent-browser 0.37.1:
 ```sh
 npm run serve &
 agent-browser open http://127.0.0.1:8787/
-agent-browser webmcp list                                   # all 19 tools
+agent-browser webmcp list                                   # all 24 tools
 agent-browser webmcp invoke ocs_get_state
 agent-browser webmcp invoke ocs_capture_view --params '{"max_width":900}'   # returns image/jpeg
 # a write blocks on the human's dialog, so detach it and collect the result after approval:

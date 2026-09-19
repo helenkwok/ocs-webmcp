@@ -42,8 +42,13 @@ export function serialised(confirm) {
     };
 }
 
-/** What the human sees in the confirm dialog: the tool, and every argument, verbatim. */
+/**
+ * What the human sees in the confirm dialog: the tool, and every argument, verbatim. A tool may
+ * supply `describe(input)` to lay its arguments out more readably (a batch lists its steps), but
+ * it must still show all of them.
+ */
 export function describeIntent(def, input) {
+    if (def.describe) return { title: def.title, tool: def.name, args: def.describe(input ?? {}) };
     const args = Object.entries(input ?? {})
         .map(([k, v]) => `${k} = ${typeof v === "string" && v.length > 300 ? `${JSON.stringify(v.slice(0, 300))}… (${v.length} chars)` : JSON.stringify(v)}`)
         .join("\n");
