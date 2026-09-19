@@ -56,6 +56,12 @@ function b64ToBytes(b64) {
 }
 
 
+/** Pages the editor tried to open during a call (the shell blocks them); see shell.js. */
+function blockedSince(session, from) {
+    const urls = (session?.blockedOpens ?? []).slice(from);
+    return urls.length ? { blocked_opening: urls, note: "The editor tried to open these pages; the shell blocked them so you keep the editor." } : {};
+}
+
 function refuseStale(given, revision) {
     if (given != null && given !== revision) {
         throw new ControlError({ code: "stale_state", error: `The drawing changed since you read it (your revision ${given}, now ${revision}). Re-read before editing.` });
@@ -262,11 +268,12 @@ export const WRITE_TOOLS = [
             properties: { cmd: { type: "string", description: "The full command line." }, revision: { type: "integer", description: "Optional: the drawing revision you last read (from ocs_get_state or ocs_query_records). If the drawing has changed since, the edit is refused instead of applied to a version you have not seen." }, },
             required: ["cmd"],
         },
-        handler: async (input, { control }) => {
+        handler: async (input, { control, session }) => {
             const { document_id, revision } = await control.activeDrawing();
             if (input.revision != null && input.revision !== revision) {
                 throw new ControlError({ code: "stale_state", error: `The drawing changed since you read it (your revision ${input.revision}, now ${revision}). Re-read before editing.` });
             }
+            const opensBefore = session?.blockedOpens?.length ?? 0;
             const before = await entityTotal(control);
             const reply = await control.must({ op: "run", request_id: control.nextRequestId("run"), document_id, revision, cmd: input.cmd });
             const st = await settle(control, (s) => s.revision !== revision || s.command == null, 3000);
@@ -278,6 +285,7 @@ export const WRITE_TOOLS = [
                 entities_after: after,
                 added: before != null && after != null ? after - before : null,
                 revision: st.revision,
+                ...blockedSince(session, opensBefore),
             };
         },
     },
@@ -436,7 +444,10 @@ export const WRITE_TOOLS = [
             },
             required: ["cmd"],
         },
-        handler: async (input, { control }) => runCommandSteps(control, input),
+        handler: async (input, { control, session }) => {
+            const from = session?.blockedOpens?.length ?? 0;
+            return { ...(await runCommandSteps(control, input)), ...blockedSince(session, from) };
+        },
     },
     {
         name: "ocs_set_layer",

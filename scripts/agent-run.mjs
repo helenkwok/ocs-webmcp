@@ -77,7 +77,8 @@ const cleanup = () => { try { ab("close"); } catch {} server.kill(); };
 try {
     await sleep(500);
     ab("set", "viewport", "1600", "1000");
-    ab("open", URL);
+    // Pin the session to this tab, so nothing the page opens can pull the agent's session away.
+    ab("--pin-tab", "open", URL);
     let ready = "";
     for (let i = 0; i < 120 && !ready; i++) { ready = js(`document.documentElement.dataset.ocsWebmcpReady ?? ''`) ?? ""; if (!ready) await sleep(1000); }
     if (!ready) throw new Error("the WebMCP shell did not become ready");

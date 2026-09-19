@@ -314,6 +314,16 @@ try {
     const circlesAfter = (await countOf()).Circle;
     check("ocs_batch stops at the first failure and says what ran", /batch_stopped/.test(payload(r.raw)) && /Step 2/.test(payload(r.raw)) && circlesAfter === circlesBefore + 1, `circles ${circlesBefore}→${circlesAfter} · ${payload(r.raw).slice(0, 220)}`);
 
+    // A command that opens a web page (HELP) must not take the browser away from the editor.
+    const pages = async () => (await cdp("Target.getTargets")).result?.targetInfos?.filter((t) => t.type === "page").length;
+    const pagesBefore = await pages();
+    r = await call("ocs_run_command", { cmd: "HELP" }, true);
+    await sleep(800);
+    const pagesAfter = await pages();
+    const stillHere = await ev(`location.pathname === '/' && !!document.documentElement.dataset.ocsWebmcpReady`);
+    await call("ocs_cancel_command", {}, true);
+    check("HELP opens no tab; the blocked URL is reported to the agent", pagesAfter === pagesBefore && stillHere && (json(r.raw)?.blocked_opening?.length ?? 0) > 0, `tabs ${pagesBefore}→${pagesAfter} · blocked=${JSON.stringify(json(r.raw)?.blocked_opening)}`);
+
     // ── 3D: extrude, preset views, visual style ──
     await call("ocs_new_drawing", {}, true);
     await call("ocs_run_command", { cmd: "PLINE 0,0 40,0 40,20 0,20 C" }, true);

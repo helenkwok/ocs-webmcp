@@ -74,13 +74,34 @@ const ui = {
         log.prepend(li);
     },
 };
-const session = { recording: null, lastRecording: null };
+const session = { recording: null, lastRecording: null, blockedOpens: [] };
+
+// ── the editor may not open tabs or windows ────────────────────────────────────────────────
+// Some commands open a web page (HELP opens the project's discussions). In a browser an agent
+// drives, a new tab can take the agent's session away from the editor, and the agent loses its
+// tools mid-task. So the editor's window.open is replaced, at runtime, by one that opens
+// nothing, shows the URL in the activity trail, and tells the next tool reply. No upstream file
+// is changed.
+function guardWindowOpen() {
+    const w = frame.contentWindow;
+    if (!w || w.__ocsOpenGuard) return;
+    w.__ocsOpenGuard = true;
+    w.open = (url) => {
+        const target = String(url ?? "");
+        session.blockedOpens.push(target);
+        onEvent({ tool: "editor", phase: "blocked", detail: `tried to open ${target || "a new window"}; not opened` });
+        return null;
+    };
+}
+frame.addEventListener("load", guardWindowOpen);
+guardWindowOpen();
 const mc = document.modelContext;
 
 setStatus("Loading Open CAD Studio…");
 control
     .ready()
     .then(async () => {
+        guardWindowOpen();
         const st = await control.state();
         if (!mc?.registerTool) {
             setStatus(`Open CAD Studio ${st.version} ready, but WebMCP is unavailable in this browser (enable chrome://flags/#enable-webmcp-testing)`, false);
