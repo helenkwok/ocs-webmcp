@@ -2,11 +2,14 @@
 //
 // Usage:
 //   npm run build   # once
-//   node scripts/agent-run.mjs <task.md> [--out dir] [--record] [--decline <regex>] [--timeout <min>] -- <agent command...>
+//   node scripts/agent-run.mjs <task.md> [--pdf file.pdf] [--out dir] [--record] [--record-from first-write|start]
+//                              [--decline <regex>] [--timeout <min>] -- <agent command...>
 //
 // The agent command is run with these environment variables:
 //   OCS_PROMPT_FILE  the full prompt: how to reach the tools, then your task
 //   OCS_SESSION      the agent-browser session that has Open CAD Studio open
+//   OCS_PDF_SESSION  with --pdf: a second session showing that PDF in Chrome's viewer, so the agent
+//                    needs nothing but agent-browser to read the drawing
 // e.g.  -- sh -c 'claude -p "$(cat "$OCS_PROMPT_FILE")" --allowedTools "Bash(agent-browser:*)" Read'
 //
 // The agent reaches the tools only through agent-browser's WebMCP client (`webmcp list / invoke /
@@ -15,6 +18,11 @@
 // was shown. Nothing else in the page is touched by the harness.
 //
 // Writes to <out>: prompt.md, agent.log, approvals.json, final.png, and run.mp4 with --record.
+// The recording runs from the moment the editor is ready (run-full.mp4). With --record-from
+// first-write (the default), run.mp4 is cut to start 2 s before the first request the human
+// answered, so the video does not open on minutes of the agent reading. (Starting the recorder at
+// that moment instead does not work: agent-browser runs one command per session at a time, so
+// `record start` would wait behind the agent's pending `webmcp result` and delay the approval.)
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, createWriteStream } from "node:fs";
@@ -23,7 +31,7 @@ import { resolve } from "node:path";
 const argv = process.argv.slice(2);
 const dash = argv.indexOf("--");
 if (dash < 1) {
-    console.error("usage: node scripts/agent-run.mjs <task.md> [--out dir] [--record] [--decline <regex>] [--timeout <min>] -- <agent command...>");
+    console.error("usage: node scripts/agent-run.mjs <task.md> [--pdf file.pdf] [--out dir] [--record] [--record-from first-write|start] [--decline <regex>] [--timeout <min>] -- <agent command...>");
     process.exit(2);
 }
 const opts = argv.slice(0, dash), agentCmd = argv.slice(dash + 1);
@@ -32,16 +40,39 @@ const taskFile = opts[0];
 const ROOT = resolve(import.meta.dirname, "..");
 const OUT = resolve(flag("--out") ?? resolve(ROOT, "e2e-out", `agent-run-${new Date().toISOString().replace(/[:.]/g, "-")}`));
 const RECORD = opts.includes("--record");
+const RECORD_FROM = flag("--record-from") ?? "first-write";
+const PDF = flag("--pdf") ? resolve(flag("--pdf")) : null;
 const DECLINE = flag("--decline") ? new RegExp(flag("--decline"), "i") : null;
 const TIMEOUT_MS = Number(flag("--timeout") ?? 45) * 60_000;
 const PORT = Number(process.env.PORT ?? 8795);
 const SESSION = `ocs-agent-${process.pid}`;
+const PDF_SESSION = `${SESSION}-pdf`;
 const URL = `http://127.0.0.1:${PORT}/`;
 mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ab = (...args) => execFileSync("agent-browser", ["--session", SESSION, ...args], { encoding: "utf8", maxBuffer: 64 << 20 }).trim();
 const js = (expr) => { try { return JSON.parse(ab("eval", expr)); } catch { return null; } };
+const abPdf = (...args) => execFileSync("agent-browser", ["--session", PDF_SESSION, ...args], { encoding: "utf8" }).trim();
+
+/** Page size in points, from the first /MediaBox (enough for the guide's zoom arithmetic). */
+function pdfPageSize(file) {
+    const m = readFileSync(file).toString("latin1").match(/\/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/);
+    return m ? { w: Math.round(m[3] - m[1]), h: Math.round(m[4] - m[2]) } : null;
+}
+const page = PDF ? pdfPageSize(PDF) : null;
+const pdfGuide = PDF ? `
+# The drawing
+
+The drawing is open in Chrome's PDF viewer in a SECOND session, \`${PDF_SESSION}\` (keep the
+editor's session for the tools). To look at it:
+- Whole sheet: \`agent-browser --session ${PDF_SESSION} screenshot <file.png>\`, then read the PNG.
+- Zoom into a region: reopen it with PDF open parameters,
+  \`agent-browser --session ${PDF_SESSION} close; agent-browser --session ${PDF_SESSION} set viewport 1600 1000;
+  agent-browser --session ${PDF_SESSION} open "file://${PDF}#zoom=400,LEFT,TOP"\`, then screenshot.
+  LEFT and TOP are in PDF points from the page's bottom-left corner${page ? ` (this page is ${page.w} × ${page.h} pt)` : ""};
+  the zoom only applies on a fresh open, hence the close.
+` : "";
 
 const guide = `# How to reach the CAD editor
 
@@ -64,6 +95,7 @@ Do not click, type or run JavaScript in the page yourself: work only through the
 the human declines comes back as REFUSED; do not retry it. Group related edits with ocs_batch
 so the human approves a whole step at once instead of each call.
 
+${pdfGuide}
 # Your task
 
 `;
@@ -72,7 +104,11 @@ writeFileSync(resolve(OUT, "prompt.md"), guide + readFileSync(taskFile, "utf8"))
 const server = spawn(process.execPath, [resolve(ROOT, "scripts/serve.mjs")], { env: { ...process.env, PORT: String(PORT) }, stdio: "ignore" });
 const approvals = [];
 let agent = null, stopApprover = false;
-const cleanup = () => { try { ab("close"); } catch {} server.kill(); };
+const cleanup = () => {
+    try { ab("close"); } catch {}
+    if (PDF) try { abPdf("close"); } catch {}
+    server.kill();
+};
 
 try {
     await sleep(500);
@@ -83,28 +119,55 @@ try {
     for (let i = 0; i < 120 && !ready; i++) { ready = js(`document.documentElement.dataset.ocsWebmcpReady ?? ''`) ?? ""; if (!ready) await sleep(1000); }
     if (!ready) throw new Error("the WebMCP shell did not become ready");
     console.log(`ready: ${ready} tools · session ${SESSION} · out ${OUT}`);
-    if (RECORD) ab("record", "start", resolve(OUT, "run.mp4"));
+    if (PDF) {
+        abPdf("set", "viewport", "1600", "1000");
+        abPdf("--pin-tab", "open", `file://${PDF}`);
+        console.log(`pdf: ${PDF} in session ${PDF_SESSION}`);
+    }
+    let recordingSince = null;
+    if (RECORD) {
+        ab("record", "start", resolve(OUT, "run-full.mp4"));
+        recordingSince = Date.now();
+    }
 
-    // The stand-in human: answer each confirm dialog, and log exactly what it showed.
+    // The stand-in human: answer each confirm dialog, and log exactly what it showed. It talks to
+    // the page over its OWN DevTools connection. agent-browser runs one command per session at a
+    // time, so through the agent's session it would wait behind the agent's pending
+    // `webmcp result` (up to 25 s) before it could even see the dialog.
+    const browserWs = ab("get", "cdp-url");
+    const targets = await (await fetch(browserWs.replace(/^ws:/, "http:").replace(/\/devtools\/browser\/.*$/, "/json"))).json();
+    const target = targets.find((t) => t.type === "page" && t.url.startsWith(URL));
+    if (!target) throw new Error("could not find the editor page over DevTools");
+    const ws = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
+    let n = 0;
+    const pending = new Map();
+    ws.onmessage = (m) => { const d = JSON.parse(m.data); pending.get(d.id)?.(d); pending.delete(d.id); };
+    const evaluate = (expression) => new Promise((r) => {
+        const id = ++n;
+        pending.set(id, (d) => r(d.result?.result?.value));
+        ws.send(JSON.stringify({ id, method: "Runtime.evaluate", params: { expression, returnByValue: true } }));
+    });
     const approver = (async () => {
         while (!stopApprover) {
-            if (js(`document.querySelector('[data-ocs-confirm]')?.open === true`)) {
-                const shown = js(`document.querySelector('[data-ocs-confirm] pre')?.textContent ?? ''`) ?? "";
+            const shown = await evaluate(`document.querySelector('[data-ocs-confirm]')?.open === true ? (document.querySelector('[data-ocs-confirm] pre')?.textContent ?? '') : null`);
+            if (shown != null) {
                 const approve = !(DECLINE && DECLINE.test(shown));
                 await sleep(700); // a human reads before deciding
-                try { ab("click", approve ? "[data-ocs-approve]" : "[data-ocs-decline]"); } catch {}
+                await evaluate(`document.querySelector(${JSON.stringify(approve ? "[data-ocs-approve]" : "[data-ocs-decline]")})?.click()`);
                 approvals.push({ at: new Date().toISOString(), approved: approve, shown });
                 console.log(`${approve ? "APPROVED" : "DECLINED"}: ${shown.replace(/\s+/g, " ").slice(0, 160)}`);
                 await sleep(400);
             }
-            await sleep(300);
+            await sleep(250);
         }
+        ws.close();
     })();
 
     const log = createWriteStream(resolve(OUT, "agent.log"));
     const t0 = Date.now();
     agent = spawn(agentCmd[0], agentCmd.slice(1), {
-        env: { ...process.env, OCS_PROMPT_FILE: resolve(OUT, "prompt.md"), OCS_SESSION: SESSION },
+        env: { ...process.env, OCS_PROMPT_FILE: resolve(OUT, "prompt.md"), OCS_SESSION: SESSION, ...(PDF ? { OCS_PDF_SESSION: PDF_SESSION } : {}) },
         stdio: ["ignore", "pipe", "pipe"],
     });
     agent.stdout.pipe(log, { end: false });
@@ -118,7 +181,14 @@ try {
     await approver;
     log.end();
     ab("screenshot", resolve(OUT, "final.png"));
-    if (RECORD) ab("record", "stop");
+    if (recordingSince) {
+        ab("record", "stop");
+        const full = resolve(OUT, "run-full.mp4"), cut = resolve(OUT, "run.mp4");
+        const first = approvals[0] ? Date.parse(approvals[0].at) : null;
+        const from = RECORD_FROM === "first-write" && first ? Math.max(0, (first - recordingSince) / 1000 - 2) : 0;
+        execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", String(from), "-i", full, "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "20", cut]);
+        console.log(`video: ${cut} (from ${from.toFixed(1)} s of the full recording)`);
+    }
     writeFileSync(resolve(OUT, "approvals.json"), JSON.stringify(approvals, null, 1));
     console.log(`${approvals.length} approval(s) · ${OUT}`);
 } catch (e) {
