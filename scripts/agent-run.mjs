@@ -2,7 +2,7 @@
 //
 // Usage:
 //   npm run build   # once
-//   node scripts/agent-run.mjs <task.md> [--pdf file.pdf] [--out dir] [--record] [--record-from first-write|start]
+//   node scripts/agent-run.mjs <task.md> [--pdf file.pdf] [--start-blank] [--out dir] [--record] [--record-from first-write|start]
 //                              [--decline <regex>] [--timeout <min>] -- <agent command...>
 //
 // The agent command is run with these environment variables:
@@ -17,7 +17,12 @@
 // stand-in human here approves it (or declines it, if it matches --decline) and logs exactly what
 // was shown. Nothing else in the page is touched by the harness.
 //
-// Writes to <out>: prompt.md, agent.log, approvals.json, final.png, and run.mp4 with --record.
+// --start-blank: before the agent starts, the stand-in human dismisses Open CAD Studio's donation
+// prompt and opens a blank drawing, so the editor is not left on its start page.
+//
+// Writes to <out>: prompt.md, agent.log, approvals.json, final.png, and with --record run.mp4
+// (with --pdf: the drawing and the editor side by side, idle compressed; the editor alone is
+// run-editor.mp4).
 // The recording runs from the moment the editor is ready (run-full.mp4). With --record-from
 // first-write (the default), run.mp4 is cut to start 2 s before the first request the human
 // answered (other than an empty ocs_new_drawing), so the video does not open on minutes of the
@@ -43,6 +48,7 @@ const OUT = resolve(flag("--out") ?? resolve(ROOT, "e2e-out", `agent-run-${new D
 const RECORD = opts.includes("--record");
 const RECORD_FROM = flag("--record-from") ?? "first-write";
 const PDF = flag("--pdf") ? resolve(flag("--pdf")) : null;
+const START_BLANK = opts.includes("--start-blank");
 const DECLINE = flag("--decline") ? new RegExp(flag("--decline"), "i") : null;
 const TIMEOUT_MS = Number(flag("--timeout") ?? 45) * 60_000;
 const PORT = Number(process.env.PORT ?? 8795);
@@ -68,11 +74,10 @@ const pdfGuide = PDF ? `
 The drawing is open in Chrome's PDF viewer in a SECOND session, \`${PDF_SESSION}\` (keep the
 editor's session for the tools). To look at it:
 - Whole sheet: \`agent-browser --session ${PDF_SESSION} screenshot <file.png>\`, then read the PNG.
-- Zoom into a region: reopen it with PDF open parameters,
-  \`agent-browser --session ${PDF_SESSION} close; agent-browser --session ${PDF_SESSION} set viewport 1600 1000;
-  agent-browser --session ${PDF_SESSION} open "file://${PDF}#zoom=400,LEFT,TOP"\`, then screenshot.
-  LEFT and TOP are in PDF points from the page's bottom-left corner${page ? ` (this page is ${page.w} × ${page.h} pt)` : ""};
-  the zoom only applies on a fresh open, hence the close.
+- Zoom into a region: reload it with PDF open parameters, in the same tab:
+  \`agent-browser --session ${PDF_SESSION} open about:blank; agent-browser --session ${PDF_SESSION} open "file://${PDF}#zoom=400,LEFT,TOP"\`,
+  then screenshot. LEFT and TOP are in PDF points from the page's bottom-left corner${page ? ` (this page is ${page.w} × ${page.h} pt)` : ""};
+  the zoom only applies on a fresh load, hence about:blank first. Do not close this session.
 ` : "";
 
 const guide = `# How to reach the CAD editor
@@ -120,15 +125,35 @@ try {
     for (let i = 0; i < 120 && !ready; i++) { ready = js(`document.documentElement.dataset.ocsWebmcpReady ?? ''`) ?? ""; if (!ready) await sleep(1000); }
     if (!ready) throw new Error("the WebMCP shell did not become ready");
     console.log(`ready: ${ready} tools · session ${SESSION} · out ${OUT}`);
+    if (START_BLANK) {
+        // The human's own setup, not the agent's: dismiss Open CAD Studio's donation prompt and open
+        // a blank drawing, so the editor does not sit on its start page while the agent reads.
+        const r = js(`(async () => { const b = document.getElementById('ocs').contentWindow.wasmBindings;
+            const call = async (req) => { const t = b.ocs_control_submit(JSON.stringify({ protocol: 1, client_id: 'harness', request_id: 'h' + Math.random(), ...req }));
+                for (let i = 0; i < 200; i++) { const o = b.ocs_control_take(t); if (o) return JSON.parse(o); await new Promise((r) => setTimeout(r, 50)); } };
+            let st = await call({ op: 'state' });
+            if (st.modal === 'DonationPrompt') await call({ op: 'action', name: 'close_modal', document_id: st.document_id });
+            await call({ op: 'new' });
+            for (let i = 0; i < 40; i++) { st = await call({ op: 'state' }); if (st.documents?.some((d) => !d.start)) break; await new Promise((r) => setTimeout(r, 150)); }
+            return st.documents?.some((d) => !d.start) ?? false })()`);
+        console.log(`start-blank: ${r ? "blank drawing open" : "FAILED to open a blank drawing"}`);
+    }
     if (PDF) {
         abPdf("set", "viewport", "1600", "1000");
-        abPdf("--pin-tab", "open", `file://${PDF}`);
+        abPdf("--pin-tab", "open", "about:blank");
+        if (!RECORD) abPdf("open", `file://${PDF}`);
         console.log(`pdf: ${PDF} in session ${PDF_SESSION}`);
     }
-    let recordingSince = null;
+    let recordingSince = null, pdfRecordingSince = null;
     if (RECORD) {
         ab("record", "start", resolve(OUT, "run-full.mp4"));
         recordingSince = Date.now();
+        if (PDF) {
+            // Start recording WITH the navigation to the PDF, so there is at least one frame even
+            // if the agent never changes the view (a static page yields no screencast frames).
+            abPdf("record", "start", resolve(OUT, "pdf-full.mp4"), `file://${PDF}`);
+            pdfRecordingSince = Date.now();
+        }
     }
 
     // The stand-in human: answer each confirm dialog, and log exactly what it showed. It talks to
@@ -184,13 +209,29 @@ try {
     ab("screenshot", resolve(OUT, "final.png"));
     if (recordingSince) {
         ab("record", "stop");
-        const full = resolve(OUT, "run-full.mp4"), cut = resolve(OUT, "run.mp4");
+        if (pdfRecordingSince) {
+            try { abPdf("record", "stop"); } catch (e) { console.log(`pdf recording failed (${String(e.message).split("\n")[0]}); editor-only video`); pdfRecordingSince = null; }
+        }
+        const full = resolve(OUT, "run-full.mp4"), cut = resolve(OUT, PDF ? "run-editor.mp4" : "run.mp4");
         // An empty new drawing shows nothing; agents often create one and then read for minutes.
         const firstVisible = approvals.find((a) => !/^ocs_new_drawing\b/.test(a.shown.trim())) ?? approvals[0];
         const first = firstVisible ? Date.parse(firstVisible.at) : null;
         const from = RECORD_FROM === "first-write" && first ? Math.max(0, (first - recordingSince) / 1000 - 2) : 0;
         execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", String(from), "-i", full, "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "20", cut]);
         console.log(`video: ${cut} (from ${from.toFixed(1)} s of the full recording)`);
+        if (pdfRecordingSince) {
+            // Side by side, drawing (as the agent sees it) on the left, editor on the right, from
+            // the start. Unchanged frames are dropped (at most 15 in a row, so waiting runs up to
+            // 16x and activity at normal speed), which keeps the reading without the minutes of idle.
+            const both = resolve(OUT, "run.mp4");
+            const lag = (pdfRecordingSince - recordingSince) / 1000; // the PDF recording started later
+            execFileSync("ffmpeg", ["-v", "error", "-y", "-ss", String(Math.max(0, lag)), "-i", full, "-i", resolve(OUT, "pdf-full.mp4"),
+                "-filter_complex",
+                "[1:v]scale=-2:720[l];[0:v]scale=-2:720[r];" +
+                `[l][r]hstack=inputs=2,mpdecimate=max=15,setpts=N/30/TB,fps=30[v]`,
+                "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "22", both]);
+            console.log(`video: ${both} (drawing and editor side by side, idle compressed)`);
+        }
     }
     writeFileSync(resolve(OUT, "approvals.json"), JSON.stringify(approvals, null, 1));
     console.log(`${approvals.length} approval(s) · ${OUT}`);
