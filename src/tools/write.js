@@ -108,7 +108,7 @@ export const WRITE_TOOLS = [
             const st = await settle(control, (s) => (s.documents?.length ?? 0) > before || !!s.modal, 8000);
             if (st.modal) throw new ControlError({ code: "open_failed", error: `The editor opened a "${st.modal}" dialog instead of the drawing. The file may be unreadable.` });
             const doc = st.documents.find((d) => d.id === st.document_id);
-            return { opened: doc, bytes: bytes.length, entities: await entityTotal(control) };
+            return { opened: doc, bytes: bytes.length, entities: await entityTotal(control), open_method: control.openMethod };
         },
     },
     {

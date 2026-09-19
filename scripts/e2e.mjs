@@ -7,7 +7,7 @@
 // Usage: npm run build && npm run test:e2e      (writes e2e-out/log.json and e2e-out/final.png)
 
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -241,6 +241,11 @@ try {
     writeFileSync(resolve(ROOT, "dist", "e2e-sample.dxf"), DXF);
     r = await call("ocs_open_drawing", { name: "e2e-url.dxf", url: "/e2e-sample.dxf" }, true);
     check("ocs_open_drawing by url", json(r.raw)?.entities === 2 && json(r.raw)?.bytes === DXF.length, payload(r.raw).slice(0, 160));
+
+    // Builds with upstream #1351 must take the bytes directly; older ones fall back to OPFS.
+    const source = JSON.parse(readFileSync(resolve(ROOT, "dist", "ocs-source.json"), "utf8"));
+    const wantMethod = source.open_from_bytes ? "data_base64" : "opfs";
+    check(`ocs_open_drawing uses ${wantMethod} on this build`, json(r.raw)?.open_method === wantMethod, `build ${source.commit?.slice(0, 10)} open_from_bytes=${source.open_from_bytes} used=${json(r.raw)?.open_method}`);
 
     r = await call("ocs_get_history", { last: 5 });
     check("ocs_get_history", Array.isArray(json(r.raw)?.entries), payload(r.raw).slice(0, 140));

@@ -34,6 +34,8 @@ export class OcsControl {
         this.frame = frame;
         this.bindings = null;
         this.serial = 0;
+        this.bytesOpen = null; // does this build accept `open` with data_base64? null until tried
+        this.openMethod = null; // route taken by the last openBytes()
     }
 
     /** Resolve once the app's wasm has booted and the control exports exist. */
@@ -101,11 +103,27 @@ export class OcsControl {
     }
 
     /**
-     * Open a drawing from bytes. The web build's `open` op resolves a NAME against its OPFS
-     * "recent files" cache (`opencadstudio-recent/<fnv1a64(name)>.cad`, raw bytes), so we put the
-     * bytes there first, then open by name. Verified 2026-09-18 against 2026.37 (spike 224).
+     * Open a drawing from bytes. Resolves with the `open` reply; `this.openMethod` records which
+     * route was used ("data_base64" or "opfs").
+     *
+     * Builds with upstream PR #1351 (merged 2026-09-18, first released after v2026.37) take the
+     * bytes directly: `{op:"open", name, data_base64}`. Older builds answer that with
+     * `invalid_request` "Missing path" and nothing else happens, so we fall back: their `open`
+     * resolves a NAME against the OPFS "recent files" cache
+     * (`opencadstudio-recent/<fnv1a64(name)>.cad`, raw bytes), so we put the bytes there first,
+     * then open by name. Verified 2026-09-18 against 2026.37 (spike 224).
      */
     async openBytes(name, bytes) {
+        if (this.bytesOpen !== false) {
+            const reply = await this.request({ op: "open", request_id: this.nextRequestId("open"), name, data_base64: bytesToBase64(bytes) }, { timeoutMs: 60_000 });
+            const oldBuild = reply?.ok === false && reply.code === "invalid_request" && /missing path/i.test(reply.error ?? "");
+            if (!oldBuild) {
+                this.bytesOpen = true;
+                this.openMethod = "data_base64";
+                return reply;
+            }
+            this.bytesOpen = false;
+        }
         const win = this.frame.contentWindow;
         const key = fnv1a64(name) + ".cad";
         const root = await win.navigator.storage.getDirectory();
@@ -113,8 +131,16 @@ export class OcsControl {
         const writable = await (await dir.getFileHandle(key, { create: true })).createWritable();
         await writable.write(bytes);
         await writable.close();
+        this.openMethod = "opfs";
         return this.request({ op: "open", request_id: this.nextRequestId("open"), path: name });
     }
+}
+
+/** Base64 of a byte array, in chunks (spreading millions of bytes into one call overflows the stack). */
+export function bytesToBase64(bytes) {
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
 }
 
 /** FNV-1a 64-bit over UTF-8, as 16 lowercase hex digits. Mirrors web_recent.rs `name_hash`. */

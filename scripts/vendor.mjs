@@ -27,6 +27,9 @@ const UPSTREAM = "https://github.com/HakanSeven12/OpenCADStudio.git";
  * Pinned, so the combined deployment's GPL-3 Corresponding Source is exact.
  */
 const PINNED_COMMIT = "95bad2a3b2e2779ede14b79a2a1a0e32c6b8d93d";
+// `OCS_COMMIT=<sha> npm run build` builds another upstream commit, unmodified, e.g. to test
+// against main before a release. ocs-source.json then says `pinned: false`.
+const COMMIT = process.env.OCS_COMMIT || PINNED_COMMIT;
 
 const run = (cmd, cwd, env) => execSync(cmd, { cwd, stdio: "inherit", env: env ?? process.env });
 
@@ -45,7 +48,15 @@ if (!existsSync(VENDOR)) {
     run(`git clone ${UPSTREAM} ${VENDOR}`, ROOT);
 }
 run(`git fetch --tags origin`, VENDOR);
-run(`git checkout --quiet ${PINNED_COMMIT}`, VENDOR);
+run(`git fetch --quiet origin ${COMMIT}`, VENDOR);
+run(`git checkout --quiet ${COMMIT}`, VENDOR);
+const SHA = execFileSync("git", ["rev-parse", "HEAD"], { cwd: VENDOR, encoding: "utf8" }).trim();
+// Upstream PR #1351 (web `open` from data_base64). src/control.js detects it at run time; this
+// records whether the build should have it, so the e2e can check the right route was taken.
+const OPEN_FROM_BYTES_COMMIT = "2a78ebe2";
+const hasOpenFromBytes = (() => {
+    try { execFileSync("git", ["merge-base", "--is-ancestor", OPEN_FROM_BYTES_COMMIT, SHA], { cwd: VENDOR }); return true; } catch { return false; }
+})();
 const dirty = execFileSync("git", ["status", "--porcelain"], { cwd: VENDOR, encoding: "utf8" }).trim();
 if (dirty) throw new Error(`upstream checkout is modified; refusing to build a modified copy:\n${dirty}`);
 
@@ -57,19 +68,21 @@ if (want !== have) throw new Error(`wasm-bindgen-cli ${have} != Cargo.lock ${wan
 
 // ── build (upstream's own command) ──────────────────────────────────────────────────────────
 // `--layer-only` reuses an existing upstream build and only re-assembles our files.
-const layerOnly = process.argv.includes("--layer-only") && existsSync(resolve(BUILT, "index.html"));
+const builtFrom = existsSync(resolve(BUILT, ".ocs-commit")) ? readFileSync(resolve(BUILT, ".ocs-commit"), "utf8").trim() : null;
+const layerOnly = process.argv.includes("--layer-only") && existsSync(resolve(BUILT, "index.html")) && builtFrom === SHA;
 if (!layerOnly) rmSync(BUILT, { recursive: true, force: true });
 if (!layerOnly) run(`trunk build --locked --release --public-url /ocs/ --dist ${BUILT} --html-output index.html web-app.html`, VENDOR, env);
+if (!layerOnly) writeFileSync(resolve(BUILT, ".ocs-commit"), SHA + "\n");
 
 // ── assemble ────────────────────────────────────────────────────────────────────────────────
 //   /            the shell: WebMCP registration, activity panel, confirm dialog   (MIT)
 //   /src/        the layer                                                          (MIT)
-//   /ocs/        upstream Open CAD Studio, built unmodified at PINNED_COMMIT       (GPL-3.0-only)
+//   /ocs/        upstream Open CAD Studio, built unmodified at COMMIT              (GPL-3.0-only)
 rmSync(DIST, { recursive: true, force: true });
 cpSync(BUILT, resolve(DIST, "ocs"), { recursive: true });
 cpSync(resolve(ROOT, "shell/index.html"), resolve(DIST, "index.html"));
 cpSync(resolve(ROOT, "src"), resolve(DIST, "src"), { recursive: true });
 for (const f of ["NOTICE.md", "LICENSE"]) cpSync(resolve(ROOT, f), resolve(DIST, f));
-writeFileSync(resolve(DIST, "ocs-source.json"), JSON.stringify({ upstream: UPSTREAM, commit: PINNED_COMMIT, license: "GPL-3.0-only", modified: false }, null, 2) + "\n");
+writeFileSync(resolve(DIST, "ocs-source.json"), JSON.stringify({ upstream: UPSTREAM, commit: SHA, pinned: SHA === PINNED_COMMIT, open_from_bytes: hasOpenFromBytes, license: "GPL-3.0-only", modified: false }, null, 2) + "\n");
 
-console.log(`\n✓ dist/ ready: shell + unmodified Open CAD Studio @ ${PINNED_COMMIT.slice(0, 10)}. Serve with: npm run serve`);
+console.log(`\n✓ dist/ ready: shell + unmodified Open CAD Studio @ ${SHA.slice(0, 10)}${SHA === PINNED_COMMIT ? "" : " (NOT the pinned commit)"}. Serve with: npm run serve`);

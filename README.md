@@ -101,8 +101,9 @@ at **exactly** the version in upstream's `Cargo.lock` (0.2.108 at the pinned com
 
 ```sh
 npm run build      # clone upstream at the pinned commit, build it unmodified, assemble dist/
+OCS_COMMIT=<sha> npm run build   # same, at another upstream commit (dist/ocs-source.json: pinned=false)
 npm run serve      # http://127.0.0.1:8787/ with the COOP/COEP headers upstream expects
-npm run test:e2e   # 33 checks through real WebMCP in headless Chrome
+npm run test:e2e   # 34 checks through real WebMCP in headless Chrome
 node scripts/open-file.mjs plan.dwg   # open a real DWG/DXF through the tools; report + zoomed screenshot
 node scripts/demo.mjs plan.dwg        # record a demo video, driven through agent-browser (needs ffmpeg)
 ```
@@ -141,7 +142,8 @@ WebMCP is behind a flag in Chrome: enable `chrome://flags/#enable-webmcp-testing
 
 `95bad2a3` is exactly what the official web app at opencadstudio.com/app was built from
 (`/site-version.txt`): release `v2026.37` plus one web hotfix. As of 2026-09-18, the bare release
-tag and upstream `main` both fail to compile for `wasm32` (desktop-only calls in shared code).
+tag and upstream `main` both failed to compile for `wasm32` (desktop-only calls in shared code).
+Upstream fixed `main` on 2026-09-18 (#1347). The pin moves to the first release after that.
 
 ## Upstream internals this depends on
 
@@ -149,11 +151,14 @@ tag and upstream `main` both fail to compile for `wasm32` (desktop-only calls in
 
 1. `window.wasmBindings`, which is the Trunk loader's default, not a documented API;
 2. polling `ocs_control_take` for replies;
-3. opening a file by writing it into the app's OPFS "recent files" cache, then `open` by name.
+3. **opening a file, on builds before upstream #1351**: writing it into the app's OPFS "recent
+   files" cache, then `open` by name. Builds with #1351 (merged 2026-09-18) take the file itself
+   (`{"op":"open","name":…,"data_base64":…}`). `openBytes()` tries that first and falls back
+   when the app answers "Missing path"; `ocs_open_drawing` reports which route it used
+   (`open_method`), and the e2e checks it matches the build.
 
-These are the subject of an upstream proposal: a documented promise-based entry point, `open`
-from bytes, and no donation prompt while automation drives. When they land, only
-`src/control.js` changes.
+A documented promise-based entry point and no donation prompt while automation drives are
+proposed upstream (#1349). When they land, only `src/control.js` changes.
 
 ## Licence
 
