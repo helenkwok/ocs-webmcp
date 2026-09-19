@@ -158,6 +158,59 @@ agent-browser webmcp result <invocation-id>                 # "pending" until ap
 WebMCP is behind a flag in Chrome: enable `chrome://flags/#enable-webmcp-testing` (headless:
 `--enable-features=WebMCPTesting`).
 
+### Running a whole task with any agent: `scripts/agent-run.mjs`
+
+`scripts/agent-run.mjs` gives any agent that can run shell commands a task and the tools. It
+serves the editor and opens it in an agent-browser session. With `--pdf`, it also opens a drawing in
+Chrome's PDF viewer in a second session, so the agent needs nothing but agent-browser to read it.
+It then writes the agent a prompt explaining how to reach both sessions, runs the agent command
+you give it, and records the run.
+
+A **stand-in human** answers every confirm dialog and logs exactly what each one showed
+(`approvals.json`). It approves everything unless the request matches `--decline <regex>`. It is
+for demos and tests. It does not replace a person reviewing edits.
+
+With `--record`, the videos are:
+- `run.mp4`: the drawing on the left, as the agent views it, and the editor on the right. Idle
+  stretches are compressed.
+- `run-editor.mp4`: the editor alone, starting at the first edit.
+
+`--start-blank` dismisses Open CAD Studio's donation prompt and opens a blank drawing before the
+agent starts.
+
+Both of these were verified on 2026-09-19. The task was to rebuild a 7th-floor plan from a PDF of
+one sheet as a 3D model (grid, columns and walls, extruded to 3600 mm):
+
+```sh
+npm run build   # once
+
+# Claude Code (headless)
+node scripts/agent-run.mjs task.md --pdf sheet.pdf --start-blank --record -- \
+  sh -c 'cd "$(dirname "$OCS_PROMPT_FILE")" && claude -p "$(cat "$OCS_PROMPT_FILE")" \
+         --allowedTools "Bash(agent-browser:*)" Read'
+
+# Codex CLI
+node scripts/agent-run.mjs task.md --pdf sheet.pdf --start-blank --record -- \
+  sh -c 'cd "$(dirname "$OCS_PROMPT_FILE")" && codex exec --skip-git-repo-check \
+         --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
+         -c "sandbox_workspace_write.writable_roots=[\"$HOME/.agent-browser\"]" \
+         "$(cat "$OCS_PROMPT_FILE")" < /dev/null'
+```
+
+Notes on the two runs:
+- **Both got the grid exactly right.** Codex also matched the sheet's overall 29,600 × 15,400 mm
+  footprint and column sizes, in 5 approvals and 9.5 minutes. Claude Code (Sonnet) took 8
+  approvals and 17 minutes.
+- **What each agent is allowed to do:** Claude Code may run `agent-browser` and read files (it
+  looks at its own screenshots). Codex runs in its `workspace-write` sandbox with network access,
+  plus agent-browser's socket folder `~/.agent-browser` made writable.
+- **Codex's sandbox cannot launch Chrome.** That is why the harness starts both browser sessions
+  and the agent only connects to them.
+- **Other agents:** any other agent that can run shell commands plugs in the same way. Pass its
+  command after `--`; it reads the prompt from `$OCS_PROMPT_FILE`.
+- **Writes wait for the human.** agent-browser's CLI gives up on a call after 25 s, so the prompt
+  tells the agent to use `--detach` for writes and collect the result with `webmcp result`.
+
 > **macOS + Homebrew rustup:** the rustup proxies live in `/opt/homebrew/opt/rustup/bin`, which
 > is not on PATH by default. Calling a toolchain's `cargo` directly makes `rust-lld` fail to load
 > `libLLVM.dylib`. `scripts/vendor.mjs` finds the proxies itself.
